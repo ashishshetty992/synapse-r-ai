@@ -1,0 +1,9 @@
+{
+    "ask": "trend",
+    "grain": "month",
+    "metric": { "op": "count", "over": "order.id", "name": "order_count" },
+    "timeWindow": { "start": "2025-07-01T00:00:00Z", "end": "2025-10-01T00:00:00Z" },
+    "filters": [ { "field": "order.country", "op": "eq", "value": "IN" } ],
+    "explain": true,
+    "version": "iql/0.1"
+  }

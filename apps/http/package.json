@@ -1,0 +1,27 @@
+{
+  "name": "@nauvra/http",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "demo": "curl -s -X POST http://localhost:4000/seed >/dev/null && curl -s http://localhost:4000/parity -H 'content-type: application/json' -d @../../examples/iql/top-cities.last-month.in.json | jq '.parity,.mysql.rows,.mongo.rows'"
+  },
+  "dependencies": {
+    "@fastify/cors": "^8.4.0",
+    "@fastify/rate-limit": "^9.1.0",
+    "@nauvra/core": "workspace:*",
+    "@nauvra/planner": "workspace:*",
+    "@nauvra/uem": "workspace:*",
+    "@nauvra/uql-mongo": "workspace:*",
+    "@nauvra/uql-mysql": "workspace:*",
+    "fastify": "^4.28.1",
+    "tsx": "^4.16.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}

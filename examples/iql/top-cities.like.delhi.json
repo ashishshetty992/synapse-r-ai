@@ -1,0 +1,13 @@
+{
+    "ask": "top_k",
+    "k": 10,
+    "target": "city",
+    "metric": { "name": "order_count", "op": "count", "over": "order.id" },
+    "filters": [
+      { "field": "order.country", "op": "eq", "value": "IN" },
+      { "field": "order.shipping_city", "op": "like", "value": "Del" }
+    ],
+    "timeWindow": { "start": "2025-08-01T00:00:00Z", "end": "2025-09-01T00:00:00Z" },
+    "explain": true,
+    "version": "iql/0.1"
+  }

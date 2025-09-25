@@ -1,0 +1,17 @@
+{
+    "ask": "compare",
+    "target": "customer.segment",
+    "metric": { "op": "sum", "over": "total_amount" },
+    "comparePeriods": [
+      { "label": "Aug", "start": "2025-08-01T00:00:00Z", "end": "2025-09-01T00:00:00Z" },
+      { "label": "Sep", "start": "2025-09-01T00:00:00Z", "end": "2025-10-01T00:00:00Z" }
+    ],
+    "filters": [
+      { "field": "sales_order.created_at", "op": "between", "value": ["2025-08-01", "2025-10-01"] }
+    ],
+    "orderBy": [
+      { "field": "period", "dir": "asc" },
+      { "field": "customer.segment", "dir": "asc" }
+    ],
+    "limit": 100
+  }

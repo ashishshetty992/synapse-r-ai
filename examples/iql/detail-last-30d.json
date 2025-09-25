@@ -1,0 +1,20 @@
+{
+    "ask": "detail",
+    "select": [
+      { "expr": "id" },
+      { "expr": "customer_id" },
+      { "expr": "total_amount" },
+      { "expr": "created_at" },
+      { "expr": "country" },
+      { "expr": "shipping_city" }
+    ],
+    "filters": [
+      { "field": "sales_order.created_at", "op": "between", "value": ["2025-08-01", "2025-09-01"] }
+    ],
+    "orderBy": [
+      { "field": "created_at", "dir": "desc" },
+      { "field": "id", "dir": "asc" }
+    ],
+    "limit": 50,
+    "offset": 0
+  }

@@ -1,0 +1,11 @@
+{
+    "ask": "detail",
+    "filters": [
+      { "field": "customer.segment", "op": "eq", "value": "Enterprise" }
+    ],
+    "timeWindow": {
+      "start": "2025-08-01T00:00:00Z",
+      "end": "2025-09-01T00:00:00Z"
+    },
+    "limit": 50
+  }

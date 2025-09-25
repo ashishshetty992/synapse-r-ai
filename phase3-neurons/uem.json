@@ -1,0 +1,68 @@
+{
+  "version": "uem/0.1",
+  "database": { "name": "ecommerce_demo", "engine": "generic" },
+  "entities": [
+    {
+      "name": "customer",
+      "primaryKey": "id",
+      "fields": [
+        { "name": "id", "type": "number", "role": "id", "required": true, "index": true },
+        { "name": "email", "type": "string", "role": "text", "required": true, "index": true },
+        { "name": "full_name", "type": "string", "role": "text", "index": true },
+        { "name": "segment", "type": "string", "role": "category", "index": true },
+        { "name": "created_at", "type": "datetime", "role": "timestamp", "index": true }
+      ]
+    },
+    {
+      "name": "product",
+      "primaryKey": "id",
+      "fields": [
+        { "name": "id", "type": "number", "role": "id", "required": true, "index": true },
+        { "name": "sku", "type": "string", "role": "text", "required": true, "index": true },
+        { "name": "name", "type": "string", "role": "text", "index": true },
+        { "name": "category", "type": "string", "role": "category", "index": true },
+        { "name": "price", "type": "number", "role": "money" },
+        { "name": "active", "type": "boolean", "role": "flag", "index": true },
+        { "name": "created_at", "type": "datetime", "role": "timestamp", "index": true }
+      ]
+    },
+    {
+      "name": "orders",
+      "primaryKey": "id",
+      "fields": [
+        { "name": "id", "type": "number", "role": "id", "required": true, "index": true },
+        { "name": "customer_id", "type": "number", "role": "id", "index": true, "ref": { "entity": "customer", "field": "id" } },
+        { "name": "status", "type": "string", "role": "category", "index": true },
+        { "name": "total_amount", "type": "number", "role": "money" },
+        { "name": "currency", "type": "string", "role": "category" },
+        { "name": "country", "type": "string", "role": "category", "index": true },
+        { "name": "shipping_city", "type": "string", "role": "geo", "index": true },
+        { "name": "created_at", "type": "datetime", "role": "timestamp", "index": true }
+      ]
+    },
+    {
+      "name": "order_item",
+      "primaryKey": "id",
+      "fields": [
+        { "name": "id", "type": "number", "role": "id", "required": true, "index": true },
+        { "name": "order_id", "type": "number", "role": "id", "index": true, "ref": { "entity": "orders", "field": "id" } },
+        { "name": "product_id", "type": "number", "role": "id", "index": true, "ref": { "entity": "product", "field": "id" } },
+        { "name": "unit_price", "type": "number", "role": "money" },
+        { "name": "quantity", "type": "number", "role": "quantity" },
+        { "name": "created_at", "type": "datetime", "role": "timestamp", "index": true }
+      ]
+    },
+    {
+      "name": "payment",
+      "primaryKey": "id",
+      "fields": [
+        { "name": "id", "type": "number", "role": "id", "required": true, "index": true },
+        { "name": "order_id", "type": "number", "role": "id", "index": true, "ref": { "entity": "orders", "field": "id" } },
+        { "name": "amount", "type": "number", "role": "money" },
+        { "name": "method", "type": "string", "role": "category", "index": true },
+        { "name": "status", "type": "string", "role": "category", "index": true },
+        { "name": "created_at", "type": "datetime", "role": "timestamp", "index": true }
+      ]
+    }
+  ]
+}

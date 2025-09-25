@@ -1,0 +1,208 @@
+Phase-3: AI/ML Neuron Layer + Planner Integration — Status Checklist
+
+0) Ground Truth & North Star
+	•	✅ Clear goal: AI-assisted runtime (intent→schema, safe UQL, MySQL+Mongo, indexes/parity/policy).
+	•	✅ Success criteria defined (Exit Criteria & Metrics list).
+
+Action: none.
+
+⸻
+
+1) Neurons Service (FastAPI) & Contracts
+	•	✅ FastAPI app skeleton: /iem/build, /intent/encode, /synapse/match.
+	•	✅ Pydantic models for request/response.
+	•	✅ External uem.json (no hardcoding) → produces iem.json.
+	•	✅ Runs locally (no Docker).
+	•	🟨 Minimal error handling & input validation (happy-path only).
+	•	⛔ Auth / rate limits / structured JSON logging.
+
+Action: add robust validators (bad payloads, missing files), request-id logs, JSON logs.
+
+⸻
+
+2) Neuron-1: Schema Understanding (IEM)
+	•	✅ Field embeddings (char-ngrams) + role priors (id/timestamp/money/geo/category/text/qty).
+	•	✅ Alias generation (underscored ↔ spaced).
+	•	✅ Deterministic iem.json (configurable dim).
+	•	🟨 Quality checks (ids cluster; amounts cluster) computed & surfaced — implicit only, not reported.
+	•	⛔ IEM versioning & drift detection (compare IEM_t vs IEM_t-1).
+	•	⛔ Entity-level embeddings.
+
+Formula Lab
+	•	⛔ F1 RoleBoost™ (role-aware vector: v′ = normalize(v + λᵣ·R·r)) → emit roleBoost per field.
+	•	⛔ F2 AliasStability™ (drift guard; feeds S(p)).
+
+Action: add /iem/verify to report clustering scores, roleBoost stats, and drift alerts.
+
+⸻
+
+3) Neuron-2: Intent Encoder
+	•	✅ Encoder v0.2 (IQL → vector via char-ngrams bag).
+	•	✅ /intent/encode returns {vec, vocab}.
+	•	⛔ /intent/encode_nl (NL text → vector) with synonyms injection.
+	•	⛔ synonyms.json (e.g., “revenue→total_amount”, “city→shipping_city”).
+
+Formula Lab
+	•	⛔ F6 SynoMix™ (BM25 alias score ⊕ cosine; boosts A(p) for NLQ).
+
+Action: ship /intent/encode_nl + synonyms.json; log top alias hits.
+
+⸻
+
+4) Neuron-3: Synapse Matching
+	•	✅ Cosine ranking over IEM fields/entities.
+	•	✅ Tunables: topKFields, topKEntities, roleAlpha.
+	•	🟨 Slot-filling rules exist conceptually; not exposed as API.
+	•	⛔ Conflict resolver (multi “city” across entities).
+	•	⛔ Join inference beyond single-hop (see §7).
+
+Formula Lab
+	•	⛔ F3 AlignPlus™ (coverage-aware A(p)): log {A_base, Coverage, OffSchemaRate, A⁺}.
+	•	⛔ F4 PathScore™ (scores multi-join paths).
+
+Action: add /synapse/fill (slot fill + join hints) and /synapse/paths (path candidates + scores).
+
+⸻
+
+5) Neuron-4: Auto-Question Generator (PoC)
+	•	🟨 Prototype spec (top_k / trend / compare) only.
+	•	⛔ /generate → 5 IQLs per schema.
+	•	⛔ Validate with ops/validate-examples.js, write examples/aiql/.
+
+Action: implement /generate, write files, run validator, capture coverage.
+
+⸻
+
+6) Planner Integration (A/C/P/S/R with Beam)
+	•	✅ Formula defined; default weights documented.
+	•	🟨 Trace shows planner params & slot candidates; missing A/C/P/S/R numbers.
+	•	🟨 A(p) partially via cosine (not AlignPlus components).
+	•	🟨 C(p) hinted by adapter errors (unindexed ranges) but not scored.
+	•	🟨 P(p) simple penalty concept; not consistently applied.
+	•	⛔ S(p) (alias brittleness) not computed.
+	•	⛔ R(p) (parity/RBAC) not computed.
+	•	⛔ Boltzmann exploration (τ) in beam selection.
+
+Formula Lab
+	•	⛔ F3 AlignPlus™ → A(p)
+	•	⛔ F8 CostPlus™ → C(p)
+	•	⛔ F5 GroupInfo™ → P(p)
+	•	⛔ F2 AliasStability™ → S(p)
+	•	⛔ F7 ParityTau™ → R(p)
+
+Action: implement neuronScore(plan) and log {A,C,P,S,R,weights,final,τ}; wire adapter cost hints.
+
+⸻
+
+7) Schema Graph & Multi-Join Reasoning
+	•	🟨 Single-hop join working (sales_order ↔ customer) — proven.
+	•	⛔ Build graph.json (entities + edges: FK=1.0, heuristics<1.0).
+	•	⛔ find_paths(source,target,max_depth=3) + PathScore ranking.
+	•	⛔ Join path disambiguation using A⁺/C/S.
+
+Formula Lab
+	•	⛔ F4 PathScore™ (semantics + index + fanout + hop cost).
+
+Action: ship graph builder, path finder, /synapse/paths; add 2-hop cases (orders→order_item→product).
+
+⸻
+
+8) Multi-GroupBy & Complex Query Shapes
+	•	✅ Single & dual groupBy (segment×country; city over periods).
+	•	🟨 Triple groupBy tests (MySQL GROUP BY list, Mongo composite _id) — not in suite.
+	•	🟨 Compare periods × extra dims (period×segment×country) — missing tests.
+	•	⛔ Window functions (moving avg, YoY) — defer to Phase-4.
+	•	🟨 Nested AND/OR across joins — partial coverage.
+
+Formula Lab
+	•	⛔ F5 GroupInfo™ (parsimony vs informativeness) to score group sets.
+
+Action: add 3× groupBy examples; AND/OR precedence cases on both engines; log P(p)/InfoGain̂.
+
+⸻
+
+9) Integration with Phase-2 Runtime
+	•	✅ E2E proven: orders.* (neuron) → sales_order.* UQL/SQL; MySQL & Mongo OK.
+	•	✅ x-intent-vec path works for compile/query.
+	•	🟨 Feature flag USE_NEURONS=1 (toggle planner) — not plumbed.
+	•	🟨 Trace: add A/C/P/S/R everywhere.
+	•	⛔ Fallback policy (low neuronScore → rule planner + log).
+
+Action: add flag + fallback; propagate Formula Lab values to trace.
+
+⸻
+
+10) Parity, Index Safety & Policy
+	•	✅ Parity endpoint works; minor ordering diffs acceptable.
+	•	✅ Index guard requireIndexedFilters=true active.
+	•	🟨 Feed index/complexity hints into CostPlus™.
+	•	⛔ RBAC allowlist + penalties into R(p).
+
+Formula Lab
+	•	⛔ F7 ParityTau™ (Kendall τ from sampled parity) → R(p).
+	•	⛔ F8 CostPlus™ (unindexed_range, join_depth, like_contains, non_sargable, est_rows).
+
+Action: emit hints from adapters; compute τ_K from parity sample; wire to C(p)/R(p).
+
+⸻
+
+11) Tests & Tooling
+	•	✅ Phase-2 exerciser extended; both engines + extras run.
+	•	✅ Examples validate against schema.
+	•	⛔ run-phase3-tests.sh invoking neurons: /iem/build, /iem/verify, /intent/encode(_nl), /synapse/match, /synapse/paths, /synapse/fill, /generate.
+	•	⛔ Assertions: compiled UQL runs; traces contain {A,C,P,S,R,τ}; multi-join & 3× groupBy cases; parity τ_K present.
+
+Action: add phase-3 runner + summary.
+
+⸻
+
+12) Documentation & Operability
+	•	🟨 Phase-3 Test Report template (like Phase-1/2).
+	•	⛔ README-neurons.md (how to wire neurons; flags, headers, traces).
+	•	⛔ Whitepaper appendix: A/C/P/S/R examples & weight sensitivity.
+
+Action: draft report + README + appendix.
+
+⸻
+
+What’s DONE vs IN-PROGRESS vs NOT-TOUCHED
+
+✅ Done (yesterday snapshot)
+	•	Neurons service endpoints up.
+	•	Pydantic models; external UEM → IEM.
+	•	IEM bootstrap (embeddings, roles, aliases; deterministic).
+	•	Intent encoder v0.2 (/intent/encode).
+	•	Synapse cosine matcher + tunables.
+	•	Runtime E2E with x-intent-vec (orders.* → sales_order.*) on MySQL & Mongo.
+	•	Parity endpoint & index guard active.
+
+🟨 In Progress
+	•	Validation & error handling; JSON logs.
+	•	Quality checks for IEM; surface via /iem/verify.
+	•	Slot-filling API (/synapse/fill); conflict resolver design.
+	•	Planner partial scoring (A/C/P skeletons), traces missing numbers.
+	•	Triple groupBy & complex AND/OR tests.
+	•	USE_NEURONS feature flag; richer traces.
+	•	Phase-3 test runner; basic report template.
+
+⛔ Not Yet Touched (Formula Lab & extras)
+	•	F1 RoleBoost™, F2 AliasStability™.
+	•	F3 AlignPlus™ (coverage-aware A).
+	•	F4 PathScore™ (multi-join chooser) + /synapse/paths.
+	•	F5 GroupInfo™ (parsimony).
+	•	F6 SynoMix™ (synonym confidence) + /intent/encode_nl + synonyms.json.
+	•	F7 ParityTau™ → R(p).
+	•	F8 CostPlus™ → C(p).
+	•	Auto-question /generate + validation harness.
+	•	RBAC stub & penalty in R(p).
+	•	Fallback policy to rule-planner.
+
+⸻
+
+Immediate Next Actions (surgical)
+	1.	Planner scoring & trace: implement neuronScore() with F3/F5/F8; log {A,C,P,S,R,final,τ}.
+	2.	Graph & paths: build graph.json, add find_paths() + F4 PathScore™; ship /synapse/paths.
+	3.	/synapse/fill: slot fill + join hints; add 3× groupBy examples.
+	4.	Intent NL: /intent/encode_nl + F6 SynoMix™; load synonyms.json.
+	5.	Costs/Parity: adapter hints → F8 CostPlus™; parity sample → F7 ParityTau™.
+	6.	Phase-3 runner: run-phase3-tests.sh invoking all neuron endpoints; collect traces & parity τ_K.

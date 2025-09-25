@@ -1,0 +1,9 @@
+{
+  "ask": "detail",
+  "limit": 50,
+  "filters": [
+    { "field": "order.country", "op": "eq", "value": "IN" }
+  ],
+  "timeWindow": { "start": "2025-08-01T00:00:00Z", "end": "2025-09-01T00:00:00Z" },
+  "version": "iql/0.1"
+}

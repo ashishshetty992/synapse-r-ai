@@ -1,0 +1,13 @@
+{
+    "ask": "top_k",
+    "target": "customer.segment",
+    "metric": { "op": "count", "over": "order.id", "name": "order_count" },
+    "filters": [
+      { "field": "order.country", "op": "eq", "value": "IN" }
+    ],
+    "timeWindow": {
+      "start": "2025-08-01T00:00:00Z",
+      "end": "2025-09-01T00:00:00Z"
+    },
+    "k": 5
+  }

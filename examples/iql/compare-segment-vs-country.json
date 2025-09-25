@@ -1,0 +1,19 @@
+{
+  "ask": "compare",
+  "targets": ["customer.segment", "sales_order.country"],
+  "metric": { "op": "count" },
+  "filters": [
+    {
+      "field": "sales_order.created_at",
+      "op": "between",
+      "value": ["2025-08-01T00:00:00Z", "2025-09-01T00:00:00Z"]
+    }
+  ],
+  "orderBy": [
+    { "field": "count(*)", "dir": "desc" },
+    { "field": "customer.segment", "dir": "asc" },
+    { "field": "sales_order.country", "dir": "asc" }
+  ],
+  "limit": 100,
+  "version": "iql/0.1"
+}
