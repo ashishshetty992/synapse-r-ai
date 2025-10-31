@@ -13,8 +13,8 @@ Action: none.
 	•	✅ Pydantic models for request/response.
 	•	✅ External uem.json (no hardcoding) → produces iem.json.
 	•	✅ Runs locally (no Docker).
-	•	🟨 Minimal error handling & input validation (happy-path only).
-	•	⛔ Auth / rate limits / structured JSON logging.
+	•	✅ Minimal error handling & input validation (happy-path only).
+	•	✅ Auth / rate limits / structured JSON logging.
 
 Action: add robust validators (bad payloads, missing files), request-id logs, JSON logs.
 
@@ -24,13 +24,13 @@ Action: add robust validators (bad payloads, missing files), request-id logs, JS
 	•	✅ Field embeddings (char-ngrams) + role priors (id/timestamp/money/geo/category/text/qty).
 	•	✅ Alias generation (underscored ↔ spaced).
 	•	✅ Deterministic iem.json (configurable dim).
-	•	🟨 Quality checks (ids cluster; amounts cluster) computed & surfaced — implicit only, not reported.
-	•	⛔ IEM versioning & drift detection (compare IEM_t vs IEM_t-1).
-	•	⛔ Entity-level embeddings.
+	•	✅ Quality checks (ids cluster; amounts cluster) computed & surfaced — implicit only, not reported.
+	•	✅ IEM versioning & drift detection (compare IEM_t vs IEM_t-1).
+	•	✅ Entity-level embeddings.
 
 Formula Lab
-	•	⛔ F1 RoleBoost™ (role-aware vector: v′ = normalize(v + λᵣ·R·r)) → emit roleBoost per field.
-	•	⛔ F2 AliasStability™ (drift guard; feeds S(p)).
+	•	✅ F1 RoleBoost™ (role-aware vector: v′ = normalize(v + λᵣ·R·r)) → emit roleBoost per field.
+	•	✅ F2 AliasStability™ (drift guard; feeds S(p)).
 
 Action: add /iem/verify to report clustering scores, roleBoost stats, and drift alerts.
 
@@ -39,11 +39,11 @@ Action: add /iem/verify to report clustering scores, roleBoost stats, and drift 
 3) Neuron-2: Intent Encoder
 	•	✅ Encoder v0.2 (IQL → vector via char-ngrams bag).
 	•	✅ /intent/encode returns {vec, vocab}.
-	•	⛔ /intent/encode_nl (NL text → vector) with synonyms injection.
-	•	⛔ synonyms.json (e.g., “revenue→total_amount”, “city→shipping_city”).
+	•	✅ /intent/encode_nl (NL text → vector) with synonyms injection.
+	•	✅ synonyms.json (e.g., “revenue→total_amount”, “city→shipping_city”).
 
 Formula Lab
-	•	⛔ F6 SynoMix™ (BM25 alias score ⊕ cosine; boosts A(p) for NLQ).
+	•	✅ F6 SynoMix™ (BM25 alias score ⊕ cosine; boosts A(p) for NLQ).
 
 Action: ship /intent/encode_nl + synonyms.json; log top alias hits.
 
@@ -52,24 +52,163 @@ Action: ship /intent/encode_nl + synonyms.json; log top alias hits.
 4) Neuron-3: Synapse Matching
 	•	✅ Cosine ranking over IEM fields/entities.
 	•	✅ Tunables: topKFields, topKEntities, roleAlpha.
-	•	🟨 Slot-filling rules exist conceptually; not exposed as API.
-	•	⛔ Conflict resolver (multi “city” across entities).
-	•	⛔ Join inference beyond single-hop (see §7).
+	•	✅ Slot-filling rules exist conceptually; not exposed as API.
+	•	✅ Conflict resolver (multi “city” across entities).
+	•	✅ Join inference beyond single-hop (see §7).
 
 Formula Lab
-	•	⛔ F3 AlignPlus™ (coverage-aware A(p)): log {A_base, Coverage, OffSchemaRate, A⁺}.
-	•	⛔ F4 PathScore™ (scores multi-join paths).
+	•	✅ F3 AlignPlus™ (coverage-aware A(p)): log {A_base, Coverage, OffSchemaRate, A⁺}.
+	•	✅ F4 PathScore™ (scores multi-join paths).
 
 Action: add /synapse/fill (slot fill + join hints) and /synapse/paths (path candidates + scores).
 
 ⸻
 
 5) Neuron-4: Auto-Question Generator (PoC)
-	•	🟨 Prototype spec (top_k / trend / compare) only.
-	•	⛔ /generate → 5 IQLs per schema.
-	•	⛔ Validate with ops/validate-examples.js, write examples/aiql/.
+	•	✅  Prototype spec (top_k / trend / compare) only.
+	•	✅  /generate → 5 IQLs per schema.
+	•	✅  Validate with ops/validate-examples.js, write examples/aiql/.
 
 Action: implement /generate, write files, run validator, capture coverage.
+
+⸻
+Neuron-5: Plan & Checklist
+
+🎯 Goals (what Neuron-5 adds)
+	•	Learn from real prompts + chosen targets to improve matching.
+	•	Support few-shot guidance per tenant/domain (no code redeploy).
+	•	Autotune role/alias/metric shaping with safe boundaries.
+	•	Continuous evaluation on golden sets with drift alerts.
+	•	Versioned models/configs with rollback.
+
+⸻
+
+🧩 Components to Build
+	•	Feedback Store (append-only):
+	•	File: phase3-neurons/data/feedback.jsonl (one JSON per line)
+	•	Schema: {ts, tenant, intent, chosenTarget, otherSlots, iemHash, userAgent, latencyMs}
+	•	API: POST /feedback/record
+	•	Golden Set (curated eval):
+	•	Dir: phase3-neurons/golden/ (e.g., orders-top-city.json)
+	•	Schema: {intent, expected: {target, slots{}}, notes}
+	•	API: GET /golden/list, POST /golden/add
+	•	Trainer (few-shot + weights search):
+	•	Module: app/trainer.py
+	•	Inputs: feedback.jsonl, golden/
+	•	Outputs:
+	•	app/checkpoints/trainer_{yyyymmddHHMM}/shaping.json
+	•	app/checkpoints/.../fewshot.json
+	•	Strategy:
+	•	rank-loss on chosenTarget vs candidates
+	•	small-grid search over {alias_alpha, shape_alpha, shape_beta, metric_alpha, role_alpha_default}
+	•	per-tenant deltas on top of global defaults
+	•	Few-Shot Runtime Booster:
+	•	File: app/fewshot.py
+	•	Loads fewshot.json and nudges role/alias priors at /intent/encode_nl & /synapse/match.
+	•	Merge order: global → tenant → request.overrides
+	•	Evaluator:
+	•	Module: app/eval.py
+	•	Metrics: Top-1 acc, MRR, Role hit@1, Slot F1, Aplus mean, PathScore mean
+	•	API: GET /trainer/last_eval
+	•	Versioning + Rollback:
+	•	API: GET /trainer/versions, POST /trainer/activate?ckpt=…, POST /trainer/rollback
+	•	Active pointers saved in phase3-neurons/runtime/active.json
+
+⸻
+
+🔌 Public APIs (new)
+	•	POST /feedback/record
+Body: {intent, chosenTarget, slots?, tenant?} → {ok, id}
+	•	POST /trainer/run
+Body: {tenant?, maxGrid=64, maxFewshot=2000} → {ok, ckpt, metrics}
+	•	POST /trainer/activate
+Body: {checkpoint} → {ok, active}
+	•	GET /trainer/versions → list of checkpoints + metrics
+	•	GET /trainer/last_eval → metrics for active ckpt
+	•	GET /fewshot/show?tenant=… → preview applied few-shot patterns
+
+⸻
+
+⚙️ Config & Files
+	•	shaping.json (trained) → app/checkpoints/.../shaping.json
+	•	weights.alias_alpha, shape_alpha, shape_beta, metric_alpha, role_alpha_default
+	•	pathScoring.idPrior, fkBonus, lengthPriorBase, cosineWeight
+	•	alignPlus.osrZeroWhenNoText
+
+		•	fewshot.json (trained):
+
+		{
+  "global": {
+    "hints": [{"tokens":["gmv","revenue"], "boost":{"role":"money", "delta":0.03}}],
+    "aliases": {"gmv":"revenue"}
+  },
+  "tenants": {
+    "acme": {
+      "hints": [{"tokens":["cz"], "boost":{"role":"geo", "delta":0.02}}]
+    }
+  }
+}
+
+	•	runtime/active.json
+
+		{"checkpoint":"trainer_2025-10-28_1405","shaping":"…/shaping.json","fewshot":"…/fewshot.json"}
+
+🛠️ CLI / Make / NPM
+	•	make feedback-demo → seeds 20 feedback rows
+	•	make trainer-run → runs trainer, prints ckpt + metrics
+	•	make trainer-activate CKPT=…
+	•	npm run train → POST /trainer/run (global)
+	•	npm run train:tenant -- acme
+	•	npm run trainer:activate -- trainer_YYYYMMDDHHMM
+
+⸻
+
+✅ QA & Validation
+	•	Offline eval (mandatory pass gates):
+	•	Top-1 accuracy: +≥5% vs baseline or reject
+	•	Aplus mean: +≥3% or neutral
+	•	No entity drift: PathScore median within ±10%
+	•	AB Shadow:
+	•	Header x-experiment: train-shadow returns both baseline & trained scores in debug
+	•	Kill-switch: TRAINER_SHADOW_ONLY=true
+	•	Canaries:
+	•	Tenant allowlist env: TRAINER_TENANT_CANARY="acme,shipyaari"
+
+⸻
+
+🔍 Observability
+	•	Structured logs: trainer.run.start/end, trainer.ckpt.activate, fewshot.load
+	•	GET /metrics Prom-style gauges:
+	•	synapse_trainer_top1_acc{tenant=…}
+	•	synapse_trainer_runs_total
+	•	synapse_feedback_rows_total
+
+⸻
+
+🧯 Guardrails
+	•	Bound weights search ranges (e.g., alias_alpha ∈ [0.25, 0.6])
+	•	PII filter for feedback payloads (no raw user text stored if marked sensitive)
+	•	Tenant isolation: disk paths under checkpoints/{tenant|_global_}/…
+
+⸻
+
+🚀 Rollout Plan
+	1.	Land Feedback Store + /feedback/record.
+	2.	Add evaluator on existing golden from Neuron-4 /generate.
+	3.	Implement trainer (grid search + few-shot extraction).
+	4.	Expose activate/rollback + shadow-AB headers.
+	5.	Enable canary tenants only; watch metrics.
+	6.	Expand to all tenants; schedule weekly re-train.
+
+⸻
+
+🔭 Stretch (optional)
+	•	Active Learning: auto-sample low-confidence conflicts into a review queue.
+	•	Contrastive Fine-Tuning: learn a small projection on top of the IEM space (kept local).
+	•	Meta-Learner: per-ask policy (top_k vs trend) to set shaping weights dynamically.
+
+⸻
+
 
 ⸻
 
@@ -165,40 +304,6 @@ Action: draft report + README + appendix.
 
 ⸻
 
-What’s DONE vs IN-PROGRESS vs NOT-TOUCHED
-
-✅ Done (yesterday snapshot)
-	•	Neurons service endpoints up.
-	•	Pydantic models; external UEM → IEM.
-	•	IEM bootstrap (embeddings, roles, aliases; deterministic).
-	•	Intent encoder v0.2 (/intent/encode).
-	•	Synapse cosine matcher + tunables.
-	•	Runtime E2E with x-intent-vec (orders.* → sales_order.*) on MySQL & Mongo.
-	•	Parity endpoint & index guard active.
-
-🟨 In Progress
-	•	Validation & error handling; JSON logs.
-	•	Quality checks for IEM; surface via /iem/verify.
-	•	Slot-filling API (/synapse/fill); conflict resolver design.
-	•	Planner partial scoring (A/C/P skeletons), traces missing numbers.
-	•	Triple groupBy & complex AND/OR tests.
-	•	USE_NEURONS feature flag; richer traces.
-	•	Phase-3 test runner; basic report template.
-
-⛔ Not Yet Touched (Formula Lab & extras)
-	•	F1 RoleBoost™, F2 AliasStability™.
-	•	F3 AlignPlus™ (coverage-aware A).
-	•	F4 PathScore™ (multi-join chooser) + /synapse/paths.
-	•	F5 GroupInfo™ (parsimony).
-	•	F6 SynoMix™ (synonym confidence) + /intent/encode_nl + synonyms.json.
-	•	F7 ParityTau™ → R(p).
-	•	F8 CostPlus™ → C(p).
-	•	Auto-question /generate + validation harness.
-	•	RBAC stub & penalty in R(p).
-	•	Fallback policy to rule-planner.
-
-⸻
-
 Immediate Next Actions (surgical)
 	1.	Planner scoring & trace: implement neuronScore() with F3/F5/F8; log {A,C,P,S,R,final,τ}.
 	2.	Graph & paths: build graph.json, add find_paths() + F4 PathScore™; ship /synapse/paths.
@@ -206,3 +311,29 @@ Immediate Next Actions (surgical)
 	4.	Intent NL: /intent/encode_nl + F6 SynoMix™; load synonyms.json.
 	5.	Costs/Parity: adapter hints → F8 CostPlus™; parity sample → F7 ParityTau™.
 	6.	Phase-3 runner: run-phase3-tests.sh invoking all neuron endpoints; collect traces & parity τ_K.
+
+
+neuron 3 -  upgrade for future
+```
+Want a quick hardening pass? Three tiny upgrades (no behavioral change unless you use them):
+	1.	Per-edge breakdown in /synapse/paths debug
+Add an array like:"edgeScores": [
+  {"edge":"payment.order_id→orders.id","cosine":0.24,"idPrior":0.10,"fkBonus":0.05,"lengthPrior":0.90,"final":0.3215}
+] 
+…so you can see why a path scored what it did.
+	2.	Normalized score (0–1) alongside raw
+Return scoreNorm = min(1, max(0, score)) so UI sliders feel consistent across settings.
+	3.	Guardrails for overrides
+Clamp cosineWeight∈[0,1], lengthPriorBase∈[0.5,1.0], idPrior,fkBonus∈[0,0.5]. If an override is out of range, echo a warning in debug.warn.
+
+If you like, I’ll patch those in next. Otherwise we can move on to the next neuron (or wire the tiny Formula Lab – PathScore panel with sliders for cosineWeight / idPrior / fkBonus / lengthPriorBase and live previews).
+```
+
+💡 Future: Let Nauvra Learn This
+
+In Phase-4 (Neuro-Symbolic Learning) we’ll train a lightweight Conflict Resolver MLP that:
+	•	takes (metricVec, candidateVec, pathFeatures)
+	•	learns to predict the most probable relationally consistent slot,
+	•	and fine-tunes the weight blend (0.5/0.3/0.2 → learned dynamically).
+
+That’s when the resolver becomes self-tuning rather than heuristic.

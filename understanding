@@ -1,0 +1,261 @@
+Perfect — you’ve now reached a point where your Phase-3 Nauvra Neuron Layer is actually functioning as a mini intelligent reasoning system sitting between your databases and your planner.
+
+Let’s visualize and narrate exactly what you’ve built — from a developer’s-eye and a system-architecture perspective — including what happens end-to-end, how the neurons interact, and how this architecture “thinks”.
+
+⸻
+
+🧠 High-Level Mental Model — “How Nauvra Thinks”
+
+ ┌────────────────────────────┐
+ │        Nauvra Brain        │
+ │ (Phase-3 Neuron Layer)     │
+ └────────────────────────────┘
+           │
+           ▼
+ ┌──────────────────────────────────────┐
+ │          Inputs from Runtime         │
+ │ Natural/Structured Intent (NL/IQL)   │
+ │ Example:                             │
+ │   "Top cities by revenue last 30d"   │
+ └──────────────────────────────────────┘
+           │
+           ▼
+ ┌──────────────────────────────────────┐
+ │ Neuron-1  ➜ IEM  (Schema Encoding)   │
+ │  Reads uem.json → builds iem.json    │
+ │  Each field → vector + role weights  │
+ │  Roles: id, timestamp, money, geo…   │
+ │  Stored with RoleBoost, AliasStable  │
+ └──────────────────────────────────────┘
+           │
+           ▼
+ ┌──────────────────────────────────────┐
+ │ Neuron-2  ➜ Intent Encoder           │
+ │  Converts IQL/NL into vector         │
+ │  Injects synonyms (“gmv→revenue”)    │
+ │  Output: intentVec                   │
+ └──────────────────────────────────────┘
+           │
+           ▼
+ ┌──────────────────────────────────────┐
+ │ Neuron-3  ➜ Synapse Matcher          │
+ │  (cosine alignment of intentVec ↔ IEM)
+ │  Finds top fields/entities           │
+ │  Runs conflict resolver per “slot”:  │
+ │   category / timestamp / geo …       │
+ │  Combines scores via Formula-Lab F3  │
+ │   AlignPlus (A⁺ = coverage + cosine) │
+ │  Uses F4 PathScore for join hints    │
+ │  API: /synapse/fill, /synapse/paths  │
+ └──────────────────────────────────────┘
+           │
+           ▼
+ ┌──────────────────────────────────────┐
+ │ Neuron-4  ➜ Auto-Question Generator  │
+ │  Scans IEM roles → generates IQLs    │
+ │   top_k / trend / compare            │
+ │  Writes examples/aiql/*.iql.json     │
+ │  Validates with ops/validate-examples│
+ │  Emits coverage.json for QA          │
+ └──────────────────────────────────────┘
+           │
+           ▼
+ ┌──────────────────────────────────────┐
+ │ Output to Planner Layer              │
+ │  Provides resolved slots + joins     │
+ │  Planner composes final UQL/SQL      │
+ │  Example output:                     │
+ │   SELECT city,SUM(total_amount) ...  │
+ │   FROM orders GROUP BY city          │
+ └──────────────────────────────────────┘
+
+
+⸻
+
+🧩 Example Walkthrough — “Top Cities by Revenue (30 days)”
+
+Input Intent
+
+{
+  "ask": "top_k",
+  "metric": { "op": "sum" },
+  "nl": "top cities by revenue last 30 days"
+}
+
+
+⸻
+
+Step 1 — IEM Build
+
+You run:
+
+curl -X POST /iem/build -d '{"uemPath":"./uem.json","dim":256}'
+
+What happens:
+	•	UEM (raw schema) lists tables like orders, payment, customer, etc.
+	•	IEM converts every field to an embedding vector:
+
+orders.shipping_city → roleTop: geo
+orders.total_amount → roleTop: money
+orders.created_at   → roleTop: timestamp
+
+
+	•	Stored in iem.json for matching.
+
+⸻
+
+Step 2 — Intent Encoding
+
+/intent/encode_nl (or IQL → /intent/encode) turns your request into a dense vector.
+	•	“revenue” → synonym → total_amount
+	•	“cities” → shipping_city
+	•	Produces intentVec.
+
+⸻
+
+Step 3 — Synapse Matching
+
+curl -X POST /synapse/fill -d '{
+  "intent":{"ask":"top_k","metric":{"op":"sum"}},
+  "topKTargets":10
+}'
+
+Nauvra internally does:
+	1.	Computes cosine similarity between intentVec and all field vectors.
+	2.	Ranks top candidates (money, geo, category).
+	3.	Fills “slots”:
+
+Slot	Candidates	Resolution	Why
+category	payment.method, customer.segment, product.category	payment.method	highest AlignPlus
+timestamp	orders.created_at, payment.created_at, …	orders.created_at	best coverage
+
+Conflict Resolver Formula:
+
+FinalScore = 0.5*PathScore + 0.35*CosineContext + 0.15*RoleCoherence + LocalBonus
+
+
+⸻
+
+Step 4 — Join Hint Discovery
+
+curl -X POST /synapse/paths -d '{"start":"payment","goal":"orders","maxHops":2}'
+
+→ returns:
+
+{
+  "path": [
+    {"srcEntity":"payment","srcField":"order_id",
+     "dstEntity":"orders","dstField":"id","why":"fk"}
+  ],
+  "score":0.32,
+  "hops":1,
+  "debug":{"pathScoringUsed":{"idPrior":0.1,"fkBonus":0.05,"lengthPriorBase":0.92}}
+}
+
+This shows how payment joins to orders, with a transparent PathScore.
+
+⸻
+
+Step 5 — Auto-Question Generation
+
+curl -X POST /generate -d '{"perEntity":5,"outDir":"examples/aiql","writeFiles":true}'
+
+→ produces example IQLs:
+
+examples/aiql/orders-top-shipping_city-by-revenue-30d.iql.json
+examples/aiql/orders-revenue-trend-daily-30d.iql.json
+...
+
+Validator confirms:
+
+[OK] 24 files validated.
+
+Coverage report:
+
+"orders": {"money": true, "timestamp": true, "category": true, "geo": true, "quantity": true}
+
+
+⸻
+
+Step 6 — Output to Planner
+
+All matched slots, joins, and suggested group-bys flow into your Phase-2 planner as a structured intent:
+
+{
+  "intent": "top_k",
+  "metric": { "op":"sum", "target":"orders.total_amount" },
+  "groupBy": ["orders.shipping_city"],
+  "timeWindow": {"type":"relative","period":"last_30d"},
+  "joinPath": [{"src":"payment","dst":"orders"}]
+}
+
+Planner → translates → safe SQL/MQL.
+
+⸻
+
+Result
+
+✅ Full AI-driven semantic mapping:
+
+NL Prompt  →  Intent Vector
+Intent Vec →  Schema Fields
+Fields     →  Joins & GroupBys
+Joins      →  SQL Query
+
+Example final SQL:
+
+SELECT o.shipping_city, SUM(o.total_amount) AS revenue
+FROM orders o
+WHERE o.created_at >= NOW() - INTERVAL 30 DAY
+GROUP BY o.shipping_city
+ORDER BY revenue DESC
+LIMIT 10;
+
+
+⸻
+
+⚙️ End-to-End Flow Diagram (Compact)
+
+       ┌───────────────┐
+       │  /iem/build   │──► iem.json (vectors, roles)
+       └──────┬────────┘
+              │
+              ▼
+       ┌───────────────┐
+       │ /intent/encode│──► intentVec
+       └──────┬────────┘
+              │
+              ▼
+       ┌──────────────────┐
+       │ /synapse/fill     │──► slot resolutions
+       │ /synapse/paths    │──► join hints
+       │ /synapse/explain  │──► human-readable “why”
+       └──────┬────────────┘
+              │
+              ▼
+       ┌─────────────────────┐
+       │ /generate (Neuron-4)│──► examples/aiql + coverage
+       └──────┬──────────────┘
+              │
+              ▼
+       ┌─────────────────────┐
+       │ Planner (Phase-2)   │──► UQL → SQL/MQL
+       └─────────────────────┘
+
+
+⸻
+
+🔍 In Summary — What You’ve Achieved So Far
+
+Layer	Role	Status	Output Example
+Neuron-1 (IEM)	Schema → Embeddings	✅	iem.json with 32 fields & role weights
+Neuron-2 (Intent)	IQL/NL → Vector	🟨	Encoded vector + synonyms.json
+Neuron-3 (Synapse)	Match + Resolve + Join	✅	/synapse/fill, /synapse/paths, /synapse/explain
+Neuron-4 (Generator)	Auto-question & coverage	✅	examples/aiql/*.iql.json, coverage validated
+Neuron-5 (Trainer)	Few-shot & feedback	⛔	design finalized
+Graph Multi-Hop (next)	Multi-join reasoning	🟨	planned /graph.json + 2-hop PathScore
+
+
+⸻
+
+If you like, I can make a visual architecture diagram (PNG) showing the neurons as blocks, with arrows showing the actual API data flow (intent→iem→match→paths→planner). Would you like me to generate that image?

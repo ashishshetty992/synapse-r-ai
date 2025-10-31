@@ -1,0 +1,34 @@
+{
+  "title": "Order_item: revenue compare (this vs last month)",
+  "entity": "order_item",
+  "intent": {
+    "ask": "compare",
+    "metric": {
+      "op": "sum",
+      "target": "order_item.unit_price"
+    }
+  },
+  "iql": {
+    "ask": "compare",
+    "metric": {
+      "op": "sum",
+      "target": "order_item.unit_price"
+    },
+    "comparePeriods": [
+      {
+        "type": "relative",
+        "period": "this_month"
+      },
+      {
+        "type": "relative",
+        "period": "last_month"
+      }
+    ],
+    "where": [
+      {
+        "op": "is_not_null",
+        "field": "order_item.created_at"
+      }
+    ]
+  }
+}

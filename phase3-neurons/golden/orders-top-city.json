@@ -1,0 +1,5 @@
+{
+    "intent": {"ask": "top_k", "metric": {"op": "sum"}},
+    "expected": {"target": "orders.shipping_city", "slots": {"timestamp": "orders.created_at"}},
+    "notes": "Top shipping city by revenue"
+  }

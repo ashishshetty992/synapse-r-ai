@@ -1,0 +1,32 @@
+{
+  "title": "Payment: revenue trend (daily, 30d)",
+  "entity": "payment",
+  "intent": {
+    "ask": "trend",
+    "metric": {
+      "op": "sum",
+      "target": "payment.amount"
+    }
+  },
+  "iql": {
+    "ask": "trend",
+    "metric": {
+      "op": "sum",
+      "target": "payment.amount"
+    },
+    "timeWindow": {
+      "type": "relative",
+      "period": "last_30d"
+    },
+    "bucket": {
+      "on": "payment.created_at",
+      "grain": "day"
+    },
+    "orderBy": [
+      {
+        "expr": "bucket",
+        "dir": "asc"
+      }
+    ]
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "title": "Customer: revenue trend (weekly, 12w)",
+  "entity": "customer",
+  "intent": {
+    "ask": "trend",
+    "metric": {
+      "op": "sum",
+      "target": "customer.id"
+    }
+  },
+  "iql": {
+    "ask": "trend",
+    "metric": {
+      "op": "sum",
+      "target": "customer.id"
+    },
+    "timeWindow": {
+      "type": "relative",
+      "period": "last_30d"
+    },
+    "bucket": {
+      "on": "customer.created_at",
+      "grain": "week"
+    },
+    "orderBy": [
+      {
+        "expr": "bucket",
+        "dir": "asc"
+      }
+    ]
+  }
+}

@@ -1,0 +1,121 @@
+Formula Lab (Phase-3 addendum)
+
+F1) RoleBoost™ (IEM enrichment)
+
+Where: Neuron-1 (IEM), affects A(p) & S(p)
+Idea: Make field vectors “role-aware” so id/timestamp/money/geo snap tighter.
+	•	Inputs: raw char-ngram field vector v, role prior r (one-hot or softmax over {id,timestamp,money,geo,category,text,qty,…}).
+	•	Formula:
+v′ = normalize( v + λᵣ · R · r )
+R is a small learned/hand-set role basis (diag or low-rank); λᵣ∈[0,1].
+	•	Outputs: boosted vec v′, RoleBoost score RB = ||v′−v||₂ (used in trace).
+	•	Knobs: λᵣ (default 0.25).
+	•	Add to checklist: IEM build emits roleBoost per field; /iem/verify reports “role clustering” ↑.
+
+⸻
+
+F2) AliasStability™ (drift guard)
+
+Where: Neuron-1 (IEM) → Stability S(p) in planner
+Idea: Penalize brittle mappings when aliases/embeddings drift between IEM versions.
+	•	Inputs: alias sets A_t, A_{t−1} and vectors v_t, v_{t−1}.
+	•	Formula:
+S_field = ½·(1 − Jaccard(A_t, A_{t−1})) + ½·(1 − cos(v_t, v_{t−1}))
+S_plan = mean(S_field for chosen slots).
+	•	Outputs: S_field, S_plan.
+	•	Knobs: weight split (½/½).
+	•	Add to checklist: /iem/verify raises drift warnings; planner logs S(p).
+
+⸻
+
+F3) AlignPlus™ (coverage-aware alignment)
+
+Where: Neuron-2/3 → Alignment A(p)
+Idea: Go beyond raw cosine: reward token/alias coverage and penalize off-schema tokens.
+	•	Inputs: intent vec e, chosen slot vecs fᵢ, matched alias tokens Tₘ, total tokens T.
+	•	Formula:
+A_base = (∑ wᵢ·cos(e,fᵢ)) / (∑ wᵢ)
+Coverage = |Tₘ| / |T|
+A⁺ = A_base + μ·Coverage − ν·OffSchemaRate
+	•	Outputs: A⁺ in trace.
+	•	Knobs: μ=0.1, ν=0.05; wᵢ via RoleBoost rank.
+	•	Add to checklist: planner logs {A_base, Coverage, OffSchemaRate, A⁺}.
+
+⸻
+
+F4) PathScore™ (multi-join chooser)
+
+Where: Synapse (graph) & planner → affects A(p), C(p)
+Idea: Score candidate join paths (A→B→C) blending semantics + cost.
+	•	Inputs: path P with hops h, join keys K, index flags, fan-out estimates.
+	•	Formula:
+PathScore = η₁·avg_key_cos + η₂·IndexBonus − η₃·h − η₄·Fanout − η₅·FKMismatch
+(IndexBonus = mean(1 if both sides indexed else 0))
+	•	Outputs: top-k paths with scores; chosen path contributes to plan score.
+	•	Knobs: η₁=0.6, η₂=0.5, η₃=0.4, η₄=0.3, η₅=0.6.
+	•	Add to checklist: /synapse/paths endpoint returns scored paths; used for Item-2 exit criterion.
+
+⸻
+
+F5) GroupInfo™ (parsimony vs informativeness)
+
+Where: Planner → Parsimony P(p)
+Idea: Prefer small, informative group-bys; avoid over-binned noise.
+	•	Inputs: distinct estimates d(g) per group key g, target distinct d(y).
+	•	Proxy Formula (no full stats):
+InfoGain̂ = log(d(y)+1) − log(d(y|G)+1)  (use heuristics/estimates)
+ParsimonyPenalty P = α_g·(|G|−1) + β_d·max(0, log d(G) − cap)
+	•	Outputs: P(p) and InfoGain̂ in trace.
+	•	Knobs: α_g=0.3, β_d=0.2, cap≈log(100).
+	•	Add to checklist: tests for 3-way group-by log P and InfoGain̂.
+
+⸻
+
+F6) SynoMix™ (lexico-semantic synonym confidence)
+
+Where: Neuron-2/3 → boosts A(p) for NLQ
+Idea: Combine cosine with BM25-style alias match for NL tokens (“revenue”→total_amount).
+	•	Inputs: NL tokens q, alias bag for field a.
+	•	Formula:
+σ_BM25(q,a) + ρ·cos(e_int, f) → A_syn = (1−ρ)·σ_norm + ρ·cos
+	•	Outputs: per-field synonym score, rolled into A⁺.
+	•	Knobs: ρ=0.5; BM25 k,b defaults.
+	•	Add to checklist: /intent/encode_nl uses synonyms.json; trace lists top alias hits.
+
+⸻
+
+F7) ParityTau™ (engine agreement)
+
+Where: Planner → Policy/Parity R(p)
+Idea: Penalize plans whose results are unstable across engines.
+	•	Inputs: sample top-k results from MySQL/Mongo.
+	•	Formula:
+τ_K = KendallTau(order_mysql, order_mongo)
+R(p) = κ·(1 − τ_K)
+	•	Outputs: R(p) in trace; parity drift visible.
+	•	Knobs: κ=0.5.
+	•	Add to checklist: /parity populates τ_K; planner ingests it for R(p).
+
+⸻
+
+F8) CostPlus™ (index-aware cost)
+
+Where: Planner → Cost C(p)
+Idea: Turn adapter hints into a scalar cost.
+	•	Inputs: flags: unindexed_range, join_depth, like_contains, non_sargable, est_rows.
+	•	Formula:
+C = c₁·unindexed_range + c₂·join_depth + c₃·like_contains + c₄·non_sargable + c₅·log(est_rows+1)
+	•	Knobs: c₁=1.2, c₂=0.5, c₃=0.4, c₄=0.6, c₅=0.1.
+	•	Add to checklist: adapters emit hints; planner logs C components.
+
+⸻
+
+How this folds into your Phase-3 checklist
+	•	§2 IEM: add F1 RoleBoost, F2 AliasStability; extend /iem/verify to report RB means, drift stats.
+	•	§3 Intent: add F6 SynoMix; expose /intent/encode_nl, load synonyms.json.
+	•	§4 Synapse: add F4 PathScore; create /synapse/paths and /synapse/fill (slot fill + join hints).
+	•	§6 Planner: wire F3 AlignPlus → A(p), F8 CostPlus → C(p), F5 GroupInfo → P(p), F2 → S(p), F7 ParityTau → R(p). Log {A,C,P,S,R,final,τ}.
+	•	§10 Parity: compute τ_K for sampled results and feed F7.
+	•	§11 Tests: add unit tests per formula (inputs→score), plus end-to-end assertions that traces carry each component.
+
+If you want, I can turn these into tiny stubs (TypeScript for planner + Python for neurons) with the exact log keys so you can drop them in and start experimenting immediately.

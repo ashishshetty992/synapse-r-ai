@@ -15,7 +15,14 @@
     "coverage": "vitest run --coverage",
     "test:ci": "vitest run --coverage --reporter=default",
     "docker:test": "docker compose -f ops/docker-compose.yml up -d && sleep 5 && pnpm test && docker compose -f ops/docker-compose.yml down",
-    "validate:examples": "node ops/validate-examples.js"
+    "validate:examples": "node ops/validate-examples.js",
+    "generate:aiql": "curl -s -X POST localhost:5050/generate -H 'x-api-key: SYNAPSE@2025' -H 'content-type: application/json' -d '{\"perEntity\":5,\"outDir\":\"phase3-neurons/examples/aiql\",\"writeFiles\":true,\"writeCoverage\":true,\"strict\":true}' | jq '{total, written, coverageFile}'",
+    "validate:aiql": "node ops/validate-examples.js phase3-neurons/examples/aiql phase3-neurons/examples/aiql/_coverage.json",
+    "regen:aiql": "npm run generate:aiql && npm run validate:aiql",
+    "feedback:demo": "make feedback-demo",
+    "eval:last": "make eval",
+    "train": "make trainer-run",
+    "trainer:activate": "node -e \"console.log('Use: make trainer-activate CKPT=...')\""
   },
   "workspaces": [
     "packages/*",

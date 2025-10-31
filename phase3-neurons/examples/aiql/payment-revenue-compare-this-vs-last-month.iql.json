@@ -1,0 +1,34 @@
+{
+  "title": "Payment: revenue compare (this vs last month)",
+  "entity": "payment",
+  "intent": {
+    "ask": "compare",
+    "metric": {
+      "op": "sum",
+      "target": "payment.amount"
+    }
+  },
+  "iql": {
+    "ask": "compare",
+    "metric": {
+      "op": "sum",
+      "target": "payment.amount"
+    },
+    "comparePeriods": [
+      {
+        "type": "relative",
+        "period": "this_month"
+      },
+      {
+        "type": "relative",
+        "period": "last_month"
+      }
+    ],
+    "where": [
+      {
+        "op": "is_not_null",
+        "field": "payment.created_at"
+      }
+    ]
+  }
+}

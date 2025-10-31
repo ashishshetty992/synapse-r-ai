@@ -1,0 +1,34 @@
+{
+  "title": "Customer: top segment by units (30d)",
+  "entity": "customer",
+  "intent": {
+    "ask": "top_k",
+    "metric": {
+      "op": "sum",
+      "target": "customer.id"
+    },
+    "target": "customer.segment"
+  },
+  "iql": {
+    "ask": "top_k",
+    "metric": {
+      "op": "sum",
+      "target": "customer.id"
+    },
+    "target": "customer.segment",
+    "timeWindow": {
+      "type": "relative",
+      "period": "last_30d"
+    },
+    "groupBy": [
+      "customer.segment"
+    ],
+    "orderBy": [
+      {
+        "expr": "metric",
+        "dir": "desc"
+      }
+    ],
+    "limit": 10
+  }
+}

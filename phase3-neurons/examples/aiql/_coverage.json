@@ -1,0 +1,44 @@
+{
+  "entities": [
+    {
+      "entity": "customer",
+      "money": false,
+      "timestamp": true,
+      "category": true,
+      "geo": false,
+      "quantity": false
+    },
+    {
+      "entity": "order_item",
+      "money": true,
+      "timestamp": true,
+      "category": false,
+      "geo": false,
+      "quantity": true
+    },
+    {
+      "entity": "orders",
+      "money": true,
+      "timestamp": true,
+      "category": true,
+      "geo": true,
+      "quantity": true
+    },
+    {
+      "entity": "payment",
+      "money": true,
+      "timestamp": true,
+      "category": true,
+      "geo": false,
+      "quantity": false
+    },
+    {
+      "entity": "product",
+      "money": true,
+      "timestamp": true,
+      "category": true,
+      "geo": false,
+      "quantity": false
+    }
+  ]
+}

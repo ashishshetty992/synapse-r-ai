@@ -1,0 +1,5 @@
+{
+    "intent": {"ask": "top_k", "metric": {"op": "sum"}},
+    "expected": {"target": "payment.method", "slots": {"timestamp": "payment.created_at"}},
+    "notes": "Payment split by method"
+  }

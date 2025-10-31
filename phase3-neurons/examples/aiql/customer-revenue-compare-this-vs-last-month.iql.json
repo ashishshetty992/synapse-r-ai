@@ -1,0 +1,34 @@
+{
+  "title": "Customer: revenue compare (this vs last month)",
+  "entity": "customer",
+  "intent": {
+    "ask": "compare",
+    "metric": {
+      "op": "sum",
+      "target": "customer.id"
+    }
+  },
+  "iql": {
+    "ask": "compare",
+    "metric": {
+      "op": "sum",
+      "target": "customer.id"
+    },
+    "comparePeriods": [
+      {
+        "type": "relative",
+        "period": "this_month"
+      },
+      {
+        "type": "relative",
+        "period": "last_month"
+      }
+    ],
+    "where": [
+      {
+        "op": "is_not_null",
+        "field": "customer.created_at"
+      }
+    ]
+  }
+}

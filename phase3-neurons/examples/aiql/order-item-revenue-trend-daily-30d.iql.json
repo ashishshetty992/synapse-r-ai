@@ -1,0 +1,32 @@
+{
+  "title": "Order_item: revenue trend (daily, 30d)",
+  "entity": "order_item",
+  "intent": {
+    "ask": "trend",
+    "metric": {
+      "op": "sum",
+      "target": "order_item.unit_price"
+    }
+  },
+  "iql": {
+    "ask": "trend",
+    "metric": {
+      "op": "sum",
+      "target": "order_item.unit_price"
+    },
+    "timeWindow": {
+      "type": "relative",
+      "period": "last_30d"
+    },
+    "bucket": {
+      "on": "order_item.created_at",
+      "grain": "day"
+    },
+    "orderBy": [
+      {
+        "expr": "bucket",
+        "dir": "asc"
+      }
+    ]
+  }
+}

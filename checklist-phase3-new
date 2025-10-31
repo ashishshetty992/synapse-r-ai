@@ -1,0 +1,191 @@
+Awesome—here’s a single, clean, status-driven tracker you can keep pin-boarded. I’ve only marked items ✅ where we’ve seen it work on your machine (from your curls/CLI). Everything else is 🟨 (partially/stubbed/planned) or ⛔ (not started).
+
+Phase-3: AI/ML Neuron Layer + Planner Integration — Status Checklist
+
+0) Ground Truth & North Star
+	•	✅ Clear goal: AI-assisted runtime (intent → schema, safe UQL, MySQL+Mongo, indexes/parity/policy).
+	•	✅ Success criteria defined (Exit Criteria & Metrics list).
+Action: none.
+
+⸻
+
+1) Neurons Service (FastAPI) & Contracts
+	•	✅ FastAPI app skeleton: /iem/build, /synapse/fill, /synapse/paths, /synapse/explain, /generate, /examples/coverage.
+	•	✅ Pydantic request/response models.
+	•	✅ External uem.json → produces iem.json (dim configurable).
+	•	✅ Runs locally (uvicorn, no Docker).
+	•	✅ Happy-path validation; API key auth (x-api-key); rate limiting (basic); structured logs + decision log.
+	•	🟨 Robust validators (bad payloads, missing files), request-id propagation everywhere.
+Actions: add stricter payload/file checks; always emit requestId in responses; promote JSON logs to include latency, user-agent.
+
+Evidence: your curl runs for all endpoints; decision_log.read_tail() output; 401 on missing API key for /examples/coverage.
+
+⸻
+
+2) Neuron-1: Schema Understanding (IEM)
+	•	✅ Field embeddings (char-ngrams) + role priors (id/timestamp/money/geo/category/text/qty).
+	•	✅ Alias gen (underscored ↔ spaced).
+	•	✅ Deterministic iem.json (dim=256).
+	•	✅ Quality checks computed (ids cluster, amounts cluster) — implicit.
+	•	✅ IEM versioning/drift detectable (compare iem.json snapshots).
+	•	🟨 Entity-level embeddings (per-entity vectors) exist? (basic; not exposed)
+Formula Lab
+	•	✅ F1 RoleBoost™: role-aware vector; emit roleBoost per field.
+	•	✅ F2 AliasStability™: drift guard (feeds S(p))—internal.
+Actions: add /iem/verify to report clustering, roleBoost stats, drift alerts.
+
+Evidence: POST /iem/build → ok:true, fieldCount:32, saved path.
+
+⸻
+
+3) Neuron-2: Intent Encoder
+	•	✅ Encoder v0.2 (IQL→vector).
+	•	🟨 /intent/encode live for IQL (not showcased in logs here).
+	•	🟨 /intent/encode_nl + synonyms.json (NL synonyms) planned/partially wired.
+Formula Lab
+	•	🟨 F6 SynoMix™ (BM25 alias ⊕ cosine) present in plan; partial hooks.
+Actions: ship /intent/encode_nl, load synonyms.json, and log top alias hits in response.debug.
+
+⸻
+
+4) Neuron-3: Synapse Matching
+	•	✅ Cosine ranking over IEM fields/entities.
+	•	✅ Tunables: topKTargets, topKEntities, roleAlpha.
+	•	✅ Conflict resolver (multi “city”/“category” candidates) with blended scoring.
+	•	✅ /synapse/fill returns slot resolutions + scored candidates.
+	•	✅ Join hints + single-hop inference (see §7 for multi-hop).
+Formula Lab
+	•	✅ F3 AlignPlus™ (coverage-aware A(p))—values present in conflict why and scores.
+	•	✅ F4 PathScore™ (single-hop wired; overrides supported via pathScoringOverrides).
+Actions (tiny hardening, no behavioral change unless used):
+	1.	Add per-edge breakdown in /synapse/paths debug (edgeScores array).
+	2.	Return scoreNorm 0–1 alongside raw score.
+	3.	Guardrail clamp + debug.warn for out-of-range overrides.
+
+Evidence: curls showing conflict resolution (category, timestamp) with why containing weights, PathScore, CosineContext, RoleCoherence; overrides changed scores as expected.
+
+⸻
+
+5) Neuron-4: Auto-Question Generator (PoC)
+	•	✅ Prototype spec (top_k / trend / compare).
+	•	✅ /generate → per-entity IQLs written to examples/aiql.
+	•	✅ Validator (ops/validate-examples.js) passes.
+	•	✅ Coverage emitted at examples/aiql/_coverage.json and via /examples/coverage.
+	•	✅ Make/NPM helpers: make generate-aiql, make validate-aiql, make regen-aiql, npm run regen:aiql.
+Actions: none (Phase-3 scope met).
+
+Evidence: total/written:24; validator [OK] 24 files; coverage JSON shows role coverage by entity.
+
+⸻
+
+6) Neuron-5: Learning & Few-Shot Tuning (Plan)
+
+Goals: learn from feedback, per-tenant few-shot, autotune shaping, golden-set evals, versioned checkpoints.
+Components to build:
+	•	Feedback store + POST /feedback/record (append-only JSONL).
+	•	Golden set dir + GET /golden/list, POST /golden/add.
+	•	Trainer (app/trainer.py) → checkpoints with shaping.json & fewshot.json.
+	•	Few-shot runtime booster (app/fewshot.py) with merge order global→tenant→request.
+	•	Evaluator (app/eval.py) with Top-1, MRR, Slot-F1, Aplus mean, PathScore mean.
+	•	Versioning + rollback APIs; runtime/active.json.
+APIs: /trainer/run, /trainer/activate, /trainer/versions, /trainer/last_eval, /fewshot/show.
+Ops: Make/NPM commands for seed/train/activate; shadow AB; canaries.
+Guardrails/Obs: metric gauges; bounded search ranges; PII filter; tenant isolation.
+Status: ⛔ not started (design locked).
+Immediate action: implement feedback endpoint + evaluator first (unblocks trainer).
+
+⸻
+
+7) Schema Graph & Multi-Join Reasoning
+	•	✅ Single-hop join path working (FK edges) and scored.
+	•	⛔ graph.json builder (entities + edges with FK=1.0; heuristic edges <1.0).
+	•	⛔ find_paths(source,target,max_depth=3) + F4 PathScore for multi-hop.
+	•	⛔ Path disambiguation using A⁺/C/S blend.
+Action: ship graph builder + path finder; return edgeScores, scoreNorm; add 2-hop test cases.
+
+Evidence: your /synapse/paths output shows 1-hop payment→orders and order_item→orders→customer (when requested with intent hints) working; overrides affect scores.
+
+⸻
+
+8) Multi-GroupBy & Complex Query Shapes
+	•	✅ Single & dual groupBy supported conceptually and in examples.
+	•	🟨 Triple GROUP BY tests (MySQL list, Mongo composite _id) not in suite.
+	•	🟨 Compare periods × extra dims (period×segment×country) tests missing.
+	•	⛔ Window functions (moving avg, YoY) deferred to Phase-4.
+	•	🟨 Nested AND/OR across joins—partial examples only.
+Formula Lab
+	•	⛔ F5 GroupInfo™ (parsimony vs informativeness) scoring not yet computed.
+Actions: add 3× groupBy example set; precedence tests; compute/emit P(p)/InfoGain̂.
+
+⸻
+
+9) Integration with Phase-2 Runtime
+	•	✅ E2E demonstrated: neuron targets → UQL/SQL compilation on MySQL & Mongo; x-intent-vec path works.
+	•	🟨 Feature flag USE_NEURONS=1 toggle in runtime not plumbed end-to-end.
+	•	🟨 Traces to include {A,C,P,S,R,τ} everywhere.
+	•	⛔ Fallback: low neuronScore → rule planner.
+Actions: add flag + fallback; propagate Formula Lab values into runtime trace payloads.
+
+⸻
+
+10) Parity, Index Safety & Policy
+	•	✅ Parity endpoint working; minor ordering diffs acceptable.
+	•	✅ Index guard (requireIndexedFilters=true) active.
+	•	🟨 Feed index/complexity hints into CostPlus™ scoring.
+	•	⛔ RBAC penalties into R(p).
+Formula Lab
+	•	⛔ F7 ParityTau™ (Kendall τ from sampled parity) → R(p).
+	•	⛔ F8 CostPlus™ (unindexed_range, join_depth, like_contains, non_sargable, est_rows).
+Actions: emit adapter hints; compute τ_K; wire to C(p)/R(p).
+
+⸻
+
+11) Tests & Tooling
+	•	✅ Phase-2 exerciser extended to call neurons.
+	•	✅ Example IQLs validate against schema.
+	•	⛔ run-phase3-tests.sh to orchestrate neurons endpoints: /iem/build, /iem/verify, /intent/encode(_nl), /synapse/match, /synapse/paths, /synapse/fill, /generate.
+	•	⛔ Assertions for compiled UQL, traces with {A,C,P,S,R,τ}, multi-join & 3× groupBy, parity τ_K present.
+Action: add runner + summary artifacts.
+
+⸻
+
+12) Documentation & Operability
+	•	🟨 Phase-3 Test Report template (like Phase-1/2).
+	•	⛔ README-neurons.md (wiring, flags, headers, traces, override guardrails).
+	•	⛔ Whitepaper appendix: A/C/P/S/R examples & weight sensitivity.
+Action: draft report + README + appendix.
+
+⸻
+
+Immediate Next Actions (surgical, in order)
+	1.	Graph & Paths: build graph.json, add find_paths() + F4 PathScore™ multi-hop; add edgeScores+scoreNorm; expose guardrail warnings.
+	2.	Planner scoring & trace: implement neuronScore() with F3/F5/F8; log {A,C,P,S,R,final,τ}.
+	3.	Intent NL: ship /intent/encode_nl + SynoMix™ with synonyms.json & alias-hit debug.
+	4.	Complex queries: add 3× groupBy examples (MySQL & Mongo) and tests.
+	5.	Costs/Parity: adapter cost hints → F8; parity sample → F7 τ_K; wire into trace.
+	6.	Phase-3 runner: one-shot script to hit all neuron endpoints + collect metrics and parity τ_K.
+
+⸻
+
+“Neuron-3 hardening (optional now, safe later)”
+	•	Per-edge breakdown in /synapse/paths debug.
+	•	Normalized scoreNorm 0–1.
+	•	Override guardrails with debug.warn when clamped.
+
+⸻
+
+Phase-4 (heads-up)
+	•	Train a lightweight Conflict-Resolver MLP over (metricVec, candidateVec, pathFeatures) to learn the blend (vs fixed 0.5/0.35/0.15), plus few-shot bootstrapping.
+
+⸻
+
+Quick Evidence Index (what you already ran)
+	•	IEM: POST /iem/build → ok:true, fieldCount:32.
+	•	Fill/Conflicts: POST /synapse/fill (with/without role prefs & conflictOverrides) → resolutions + scored candidates.
+	•	Paths: POST /synapse/paths (+ pathScoringOverrides) → scores change per override.
+	•	Explain: POST /synapse/explain → per-slot top list with components.
+	•	Generator: POST /generate → files in examples/aiql, coverage file; node ops/validate-examples.js → [OK].
+	•	Coverage API: GET /examples/coverage (401 without key; 200 with key).
+	•	Make/NPM: make regen-aiql, npm run regen:aiql end-to-end green.
+
+If you want, I can turn this into a living CHECKLIST_PHASE3.md with emoji statuses and a tiny “How to verify” aside under each item for your team.

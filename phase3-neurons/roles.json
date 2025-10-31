@@ -1,0 +1,11 @@
+{
+  "keywords": {
+    "geo": ["city","country","state","region","pin","zipcode"],
+    "money": ["amount","price","cost","revenue","gmv","tax","subtotal","grand_total"],
+    "timestamp": ["date","day","week","month","year","created_at","updated_at","timestamp","ts"],
+    "category": ["segment","status","category","method","channel","type","source","payment_method"],
+    "quantity": ["count","qty","units","orders","items"],
+    "text": ["name","title","desc","description","notes"],
+    "id": ["id","*_id","order_id","customer_id","product_id"]
+  }
+}

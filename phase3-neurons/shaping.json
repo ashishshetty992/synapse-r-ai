@@ -1,0 +1,8 @@
+{
+  "weights": {
+    "alias_alpha": 0.40,
+    "shape_alpha": 0.14,
+    "shape_beta": 0.15,
+    "metric_alpha": 0.15
+  }
+}
