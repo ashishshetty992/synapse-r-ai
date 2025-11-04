@@ -2,8 +2,6 @@
 import os, json, logging
 from functools import lru_cache
 
-from starlette.background import P
-
 LOG = logging.getLogger(__name__)
 
 CFG_ROOT = os.environ.get("NEURONS_CFG_ROOT", os.path.join(os.getcwd(), "config"))
@@ -26,13 +24,13 @@ def _load_role_cfg_cached(tenant: str | None, t_mtime: float, g_mtime: float):
     gpath = os.path.join(GLOBAL_DIR, "role.json")
     t = _load_json(tpath) if tpath else None
     g = _load_json(gpath)
-    print(f"DEBUG: _load_role_cfg_cached(tenant={tenant}) -> {t or g or {'keywords': {}}}")
+    LOG.debug("load_role_cfg_cached(tenant=%s) -> %s", tenant, (t or g or {"keywords": {}}))
     return (t or g or {"keywords": {}})
 
 def load_role_cfg(tenant: str | None):
     tpath = os.path.join(CFG_ROOT, tenant, "role.json") if tenant else None
     gpath = os.path.join(GLOBAL_DIR, "role.json")
-    print(f"DEBUG: load_role_cfg(tenant={tenant}) -> {tpath or gpath}")
+    LOG.debug("load_role_cfg(tenant=%s) -> %s", tenant, (tpath or gpath))
     return _load_role_cfg_cached(tenant, _mtime(tpath) if tpath else 0.0, _mtime(gpath))
 
 # ---------- SHAPING ----------
@@ -42,7 +40,7 @@ def _load_shaping_cfg_cached(tenant: str | None, t_mtime: float, g_mtime: float)
     gpath = os.path.join(GLOBAL_DIR, "shaping.json")
     t = _load_json(tpath) if tpath else None
     g = _load_json(gpath)
-    print(f"DEBUG: _load_shaping_cfg_cached(tenant={tenant}) -> {t or g or {'weights': {}}}")
+    LOG.debug("load_shaping_cfg_cached(tenant=%s) -> %s", tenant, (t or g or {"weights": {}}))
     return (t or g or {"weights": {}})
 
 def load_shaping_cfg(tenant: str | None):
@@ -65,6 +63,9 @@ def load_shaping_cfg(tenant: str | None):
     
     p = os.path.join(GLOBAL_DIR, "shaping.json")
     LOG.debug(f"load_shaping_cfg(tenant={tenant}) -> {p}")
+    if not os.path.exists(p):
+        LOG.warning("Global shaping.json not found; using empty defaults")
+        return {"weights": {}, "pathScoring": {}, "alignPlus": {}}
     with open(p) as f:
         return json.load(f)
 
@@ -80,13 +81,13 @@ def _load_entity_cfg_cached(tenant: str | None, t_mtime: float, g_mtime: float):
     }
     t = _load_json(tpath) if tpath else None
     g = _load_json(gpath)
-    print(f"DEBUG: _load_entity_cfg_cached(tenant={tenant}) -> {t or g or dflt}")
+    LOG.debug("load_entity_cfg_cached(tenant=%s) -> %s", tenant, (t or g or dflt))
     return (t or g or dflt)
 
 def load_entity_cfg(tenant: str | None):
     tpath = os.path.join(CFG_ROOT, tenant, "entity.json") if tenant else None
     gpath = os.path.join(GLOBAL_DIR, "entity.json")
-    print(f"DEBUG: load_entity_cfg(tenant={tenant}) -> {tpath or gpath}")
+    LOG.debug("load_entity_cfg(tenant=%s) -> %s", tenant, (tpath or gpath))
     return _load_entity_cfg_cached(tenant, _mtime(tpath) if tpath else 0.0, _mtime(gpath))
 
 # ---------- SYNONYMS ----------
@@ -95,8 +96,7 @@ def load_synonyms_cached():
     return _load_json(SYNONYMS_PATH) or {}
 
 def load_synonyms():
-    # hot reload support if 
-    NEURONS_CFG_HOT=1
+    # hot reload if NEURONS_CFG_HOT=1
     if CFG_HOT:
         return _load_json(SYNONYMS_PATH) or {}
     return load_synonyms_cached()
@@ -137,11 +137,11 @@ def _load_time_cfg_cached(tenant: str | None, t_mtime: float, g_mtime: float):
     if "enabled" not in out["fiscal"]: out["fiscal"]["enabled"] = False
     if "year_start_month" not in out["fiscal"]: out["fiscal"]["year_start_month"] = 1
 
-    print(f"DEBUG: _load_time_cfg_cached(tenant={tenant}) -> rel={len(out['relative'])}, alias={len(out['aliases'])}, fiscal={out['fiscal']}")
+    LOG.debug("load_time_cfg_cached(tenant=%s) -> rel=%d, alias=%d, fiscal=%s", tenant, len(out['relative']), len(out['aliases']), out['fiscal'])
     return out
 
 def load_time_cfg(tenant: str | None):
     tpath = os.path.join(CFG_ROOT, tenant, "time.json") if tenant else None
     gpath = os.path.join(GLOBAL_DIR, "time.json")
-    print(f"DEBUG: load_time_cfg(tenant={tenant}) -> {tpath or gpath}")
+    LOG.debug("load_time_cfg(tenant=%s) -> %s", tenant, (tpath or gpath))
     return _load_time_cfg_cached(tenant, _mtime(tpath) if tpath else 0.0, _mtime(gpath))

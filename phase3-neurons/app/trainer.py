@@ -1,6 +1,6 @@
 # phase3-neurons/app/trainer.py
 from __future__ import annotations
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 import os, time, json, glob
 from datetime import datetime
 from .models import TrainerRunIn, TrainerRunOut, ActivateIn, VersionsOut
@@ -30,7 +30,9 @@ _DEFAULT_SHAPING = {
 _DEFAULT_FEWSHOT = {
     "global": {
         "hints": [
-            {"tokens":["gmv","revenue"], "boost":{"role":"money","delta":0.03}}
+            {"tokens":["gmv","revenue","sales"], "boost":{"role":"money","delta":0.03}},
+            {"tokens":["city","municipality","town"], "boost":{"role":"geo","delta":0.02}},
+            {"tokens":["status","method","channel","segment"], "boost":{"role":"category","delta":0.02}}
         ],
         "aliases": {"gmv":"revenue"}
     },
@@ -38,7 +40,8 @@ _DEFAULT_FEWSHOT = {
 }
 
 @router.post('/run', response_model=TrainerRunOut)
-async def trainer_run(inp: TrainerRunIn):
+async def trainer_run(inp: TrainerRunIn, request: Request = None):
+    rid = getattr(request.state, "request_id", "-")
     # (stub) pretend we searched; return default but clamp
     s = _DEFAULT_SHAPING.copy()
     w = s["weights"]
@@ -59,16 +62,17 @@ async def trainer_run(inp: TrainerRunIn):
         "aplus_mean": 0.0, "pathscore_mean": 0.0
     }
     write_json(os.path.join(out_dir, 'metrics.json'), metrics)
-    return TrainerRunOut(ok=True, ckpt=ckpt_name, metrics=metrics)
+    return TrainerRunOut(ok=True, ckpt=ckpt_name, metrics=metrics, requestId=rid)
 
 @router.post('/activate')
-async def trainer_activate(inp: ActivateIn):
+async def trainer_activate(inp: ActivateIn, request: Request = None):
+    rid = getattr(request.state, "request_id", "-")
     dirp = os.path.join(CKPT_DIR, inp.checkpoint)
     shp = os.path.join(dirp, 'shaping.json')
     fs = os.path.join(dirp, 'fewshot.json')
     
     if not os.path.isdir(dirp) or not os.path.exists(shp) or not os.path.exists(fs):
-        return {"ok": False, "error": "checkpoint incomplete or not found", "checkpoint": inp.checkpoint}
+        return {"ok": False, "error": "checkpoint incomplete or not found", "checkpoint": inp.checkpoint, "requestId": rid}
     
     active = {
         "checkpoint": inp.checkpoint,
@@ -77,13 +81,14 @@ async def trainer_activate(inp: ActivateIn):
     }
     os.makedirs(os.path.dirname(ACTIVE_PTR), exist_ok=True)
     write_json(ACTIVE_PTR, active)
-    return {"ok": True, "active": active}
+    return {"ok": True, "active": active, "requestId": rid}
 
 @router.get('/versions', response_model=VersionsOut)
-async def trainer_versions():
+async def trainer_versions(request: Request = None):
+    rid = getattr(request.state, "request_id", "-")
     items = []
     if not os.path.isdir(CKPT_DIR):
-        return {"versions": items}
+        return {"versions": items, "requestId": rid}
     
     for name in sorted(os.listdir(CKPT_DIR)):
         d = os.path.join(CKPT_DIR, name)
@@ -102,16 +107,17 @@ async def trainer_versions():
             except:
                 pass
         items.append(rec)
-    return {"versions": items}
+    return {"versions": items, "requestId": rid}
 
 @router.get('/last_eval')
-async def trainer_last_eval():
+async def trainer_last_eval(request: Request = None):
+    rid = getattr(request.state, "request_id", "-")
     from .deps import read_json
     # read ACTIVE_PTR's metrics if present; otherwise empty
     try:
         active = read_json(ACTIVE_PTR)
     except:
-        return {"top1_acc": 0.0, "mrr": 0.0, "slot_f1": 0.0, "aplus_mean": 0.0, "pathscore_mean": 0.0, "n_golden": 0, "n_feedback": 0, "ckpt": None}
+        return {"top1_acc": 0.0, "mrr": 0.0, "slot_f1": 0.0, "aplus_mean": 0.0, "pathscore_mean": 0.0, "n_golden": 0, "n_feedback": 0, "ckpt": None, "requestId": rid}
     
     m = os.path.join(os.path.dirname(active["shaping"]), "metrics.json")
     if os.path.exists(m):
@@ -124,7 +130,8 @@ async def trainer_last_eval():
             "pathscore_mean": metrics.get("pathscore_mean", 0.0),
             "n_golden": metrics.get("n_golden", 0),
             "n_feedback": metrics.get("n_feedback", 0),
-            "ckpt": active.get("checkpoint")
+            "ckpt": active.get("checkpoint"),
+            "requestId": rid
         }
     
-    return {"top1_acc": 0.0, "mrr": 0.0, "slot_f1": 0.0, "aplus_mean": 0.0, "pathscore_mean": 0.0, "n_golden": 0, "n_feedback": 0, "ckpt": active.get("checkpoint")}
+    return {"top1_acc": 0.0, "mrr": 0.0, "slot_f1": 0.0, "aplus_mean": 0.0, "pathscore_mean": 0.0, "n_golden": 0, "n_feedback": 0, "ckpt": active.get("checkpoint"), "requestId": rid}

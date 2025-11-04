@@ -77,6 +77,7 @@ class BuildIEMResponse(BaseModel):
     dim: int
     fieldCount: int
     savedTo: str
+    requestId: Optional[str] = None
 
 
 # ---------- REST: /intent/encode ----------
@@ -90,6 +91,7 @@ class IntentEncoding(BaseModel):
     dim: int
     vec: List[float]
     vocab: List[str]
+    requestId: Optional[str] = None
 
 
 # ---------- REST: /synapse/match ----------
@@ -194,12 +196,17 @@ class PathsResponse(BaseModel):
     ok: bool = True
     paths: List[PathCandidate]
     debug: Dict[str, Any] = {}
+    requestId: Optional[str] = None
 
 
 class FillRequest(BaseModel):
     intent: Dict[str, Any]
     topKTargets: Optional[int] = 8
     preferRoles: Optional[List[str]] = None
+    preferTargets: Optional[List[str]] = None
+    preferTargetsBoost: Optional[Dict[str, float]] = None
+    aliasTargets: Optional[List[str]] = None
+    debugExplain: Optional[bool] = False
     fillOverrides: Optional[Dict[str, Any]] = None
     preferTargetEntity: Optional[bool] = True  # NEW: tie-break toward explicit target's entity
     text: Optional[str] = None  # keep for backward compat
@@ -265,6 +272,7 @@ class ExplainResponse(BaseModel):
     explains: List[ExplainItem]
     alignPlus: AlignPlus
     debug: Dict[str, Any] = {}
+    requestId: Optional[str] = None
 
 class FillResponse(BaseModel):
     ok: bool = True
@@ -274,6 +282,7 @@ class FillResponse(BaseModel):
     conflicts: List[ConflictNote]
     alignPlus: AlignPlus
     debug: Dict[str, Any] = {}
+    requestId: Optional[str] = None
 
 class GenIQL(BaseModel):
     file: str
@@ -306,6 +315,7 @@ class GenerateExampleResponse(BaseModel):
     coverageFile: Optional[str] = None
     items: List[GenIQL]
     coverage: List[CoverageStat]
+    requestId: Optional[str] = None
 
 
 # ---------- Feedback, Trainer, Eval, Fewshot ----------
@@ -321,6 +331,7 @@ class FeedbackRecordIn(BaseModel):
 class FeedbackRecordOut(BaseModel):
     ok: bool
     id: str
+    requestId: Optional[str] = None
 
 class TrainerRunIn(BaseModel):
     tenant: Optional[str] = None
@@ -337,6 +348,7 @@ class ActivateIn(BaseModel):
 
 class VersionsOut(BaseModel):
     versions: list[dict]
+    requestId: Optional[str] = None
 
 class EvalOut(BaseModel):
     top1_acc: float
@@ -347,7 +359,9 @@ class EvalOut(BaseModel):
     n_golden: int
     n_feedback: int
     ckpt: Optional[str]
+    requestId: Optional[str] = None
 
 class FewshotShowOut(BaseModel):
     tenant: str
     merged: Dict[str, Any]
+    requestId: Optional[str] = None

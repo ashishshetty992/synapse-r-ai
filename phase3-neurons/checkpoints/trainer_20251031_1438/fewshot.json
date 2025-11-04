@@ -1,20 +1,9 @@
 {
   "global": {
     "hints": [
-      {
-        "tokens": [
-          "gmv",
-          "revenue"
-        ],
-        "boost": {
-          "role": "money",
-          "delta": 0.03
-        }
-      }
-    ],
-    "aliases": {
-      "gmv": "revenue"
-    }
-  },
-  "tenants": {}
+      {"tokens": ["gmv","revenue","sales"], "boost": {"role": "money", "delta": 0.03}},
+      {"tokens": ["city","state","country"], "boost": {"role": "geo", "delta": 0.02}},
+      {"tokens": ["status","method","channel","segment"], "boost": {"role": "category", "delta": 0.02}}
+    ]
+  }
 }

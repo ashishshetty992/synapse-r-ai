@@ -159,21 +159,22 @@ def encode_intent_to_vocab(intent: Dict[str, Any], vocab: List[str] | None, retu
 WORD_RE = re.compile(r"[a-z0-9_]+")
 SPACE_UNDERSCORE_REPLACERS = [("_", " "), (" ", "_")]
 
-def _norm(s: str) -> str:
+def _norm_soft(s: str) -> str:
+    """Softer normalizer for phrase/alias handling (does NOT strip underscores/numbers)."""
     return (s or "").lower().strip()
 
 def _variants(s: str) -> Set[str]:
-    s = _norm(s)
+    s = _norm_soft(s)
     return {s, s.replace("_", " "), s.replace(" ", "_")}
 
 def _tokenize(text: str) -> List[str]:
-    return WORD_RE.findall(_norm(text))
+    return WORD_RE.findall(_norm_soft(text))
 
 def _tokenize_with_phrases(text: str, phrase_set: Set[str]) -> List[str]:
     """
     Capture multiword phrases that exist in synonyms (e.g., 'last month') as single tokens.
     """
-    t = _norm(text)
+    t = _norm_soft(text)
     tokens = []
     used = [False]*len(t)
     # greedy phrase match (simple)
@@ -257,7 +258,7 @@ def _synonym_candidates(tokens: List[str], synonyms: Dict[str, Any]) -> List[Tup
     phrase_set = set()
     for _, mp in (synonyms or {}).items():
         for k, vs in (mp or {}).items():
-            kk = _norm(k)
+            kk = _norm_soft(k)
             flat[kk] = list(vs)
             if " " in kk: phrase_set.add(kk)
 
@@ -326,23 +327,23 @@ def encode_intent_nl(text: str, iem, synonyms: Dict[str, Any],
     # Build lexicon for typo correction
     lexicon: Set[str] = set()
     for f in iem.fields:
-        lexicon.add(_norm(f.name))
+        lexicon.add(_norm_soft(f.name))
         for al in (f.aliases or []):
-            lexicon.add(_norm(al))
+            lexicon.add(_norm_soft(al))
     # synonyms is a dict[str, dict[str, list[str]]]
     for cat, mp in (synonyms or {}).items():
         for k, vs in (mp or {}).items():
-            lexicon.add(_norm(k))
+            lexicon.add(_norm_soft(k))
             if isinstance(vs, str):
-                lexicon.add(_norm(vs))
+                lexicon.add(_norm_soft(vs))
             elif isinstance(vs, list):
                 for v in vs: 
-                    lexicon.add(_norm(v))
+                    lexicon.add(_norm_soft(v))
     # add time aliases from config
     for t in (time_cfg or {}).get("aliases", {}).values():
-        lexicon.add(_norm(str(t)))
+        lexicon.add(_norm_soft(str(t)))
     time_terms = ["month","mnth","quarter","qtr","week","wk","yesterday","today","last","this","previous","current"]
-    for t in time_terms: lexicon.add(_norm(t))
+    for t in time_terms: lexicon.add(_norm_soft(t))
 
     # Tokenize and typo-correct
     raw_text = text
@@ -351,7 +352,7 @@ def encode_intent_nl(text: str, iem, synonyms: Dict[str, Any],
     corrections: List[Dict[str, str]] = []
     fixed: List[str] = []
     for tok in toks:
-        nt = _norm(tok)
+        nt = _norm_soft(tok)
         if nt in lexicon:
             fixed.append(tok)
             continue
@@ -378,7 +379,7 @@ def encode_intent_nl(text: str, iem, synonyms: Dict[str, Any],
     phrase_set = set()
     for _, mp in (synonyms or {}).items():
         for k in (mp or {}).keys():
-            if " " in k: phrase_set.add(_norm(k))
+            if " " in k: phrase_set.add(_norm_soft(k))
     # include time phrases from config (no hardcoding)
     for ph in ((time_cfg or {}).get("relative") or {}).keys():
         if " " in ph: phrase_set.add(_lower(ph))

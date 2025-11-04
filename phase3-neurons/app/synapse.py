@@ -496,140 +496,140 @@ def _metric_entity_from_intent(intent: dict[str, Any]) -> str | None:
         return tgt.split(".")[0]
     return None
 
-def _canonical_slot_name(role_top: str, field_name: str) -> str:
-    """Map role+name to generic slot id (e.g., any '...city' under geo → 'city')."""
-    fname = field_name.lower()
-    if role_top == "geo":
-        if fname.endswith("city"):
-            return "city"
-        if fname.endswith("state"):
-            return "state"
-        if fname.endswith("country"):
-            return "country"
-        return "geo"
-    if role_top == "timestamp":
-        if "date" in fname: return "date"
-        return "timestamp"
-    if role_top == "id": return "id"
-    if role_top == "money": return "money"
-    return role_top or "unknown"
+# def _canonical_slot_name(role_top: str, field_name: str) -> str:
+#     """Map role+name to generic slot id (e.g., any '...city' under geo → 'city')."""
+#     fname = field_name.lower()
+#     if role_top == "geo":
+#         if fname.endswith("city"):
+#             return "city"
+#         if fname.endswith("state"):
+#             return "state"
+#         if fname.endswith("country"):
+#             return "country"
+#         return "geo"
+#     if role_top == "timestamp":
+#         if "date" in fname: return "date"
+#         return "timestamp"
+#     if role_top == "id": return "id"
+#     if role_top == "money": return "money"
+#     return role_top or "unknown"
 
-def _iem_field_lookup(iem: IEMIndex) -> dict[tuple[str,str], Any]:
-    return {(f.entity, f.name): f for f in iem.fields}
+# def _iem_field_lookup(iem: IEMIndex) -> dict[tuple[str,str], Any]:
+#     return {(f.entity, f.name): f for f in iem.fields}
 
-def _join_distance(iem: IEMIndex, start_entity: str, target_entity: str, max_hops: int = 3) -> int:
-    """BFS over entity graph; returns hop count or large number if unreachable."""
-    adj = _build_join_graph(iem)
-    if start_entity == target_entity: return 0
-    from collections import deque
-    q = deque([(start_entity, 0)])
-    seen = {start_entity}
-    while q:
-        e, d = q.popleft()
-        if d >= max_hops: 
-            continue
-        for (_, nxt, _, _) in adj.get(e, []):
-            if nxt in seen: 
-                continue
-            if nxt == target_entity: 
-                return d + 1
-            seen.add(nxt)
-            q.append((nxt, d + 1))
-    return 1_000_000  # unreachable sentinel
+# def _join_distance(iem: IEMIndex, start_entity: str, target_entity: str, max_hops: int = 3) -> int:
+#     """BFS over entity graph; returns hop count or large number if unreachable."""
+#     adj = _build_join_graph(iem)
+#     if start_entity == target_entity: return 0
+#     from collections import deque
+#     q = deque([(start_entity, 0)])
+#     seen = {start_entity}
+#     while q:
+#         e, d = q.popleft()
+#         if d >= max_hops: 
+#             continue
+#         for (_, nxt, _, _) in adj.get(e, []):
+#             if nxt in seen: 
+#                 continue
+#             if nxt == target_entity: 
+#                 return d + 1
+#             seen.add(nxt)
+#             q.append((nxt, d + 1))
+#     return 1_000_000  # unreachable sentinel
 
-def _name_similarity(a: str, b: str) -> float:
-    """Lightweight name sim for tie-breaks; 1 if exact, else soft by token overlap."""
-    import re
-    a, b = (a or "").lower(), (b or "").lower()
-    if a == b: return 1.0
-    at = set(re.findall(r"[a-z0-9]+", a))
-    bt = set(re.findall(r"[a-z0-9]+", b))
-    if not at or not bt: return 0.0
-    return len(at & bt) / len(at | bt)
+# def _name_similarity(a: str, b: str) -> float:
+#     """Lightweight name sim for tie-breaks; 1 if exact, else soft by token overlap."""
+#     import re
+#     a, b = (a or "").lower(), (b or "").lower()
+#     if a == b: return 1.0
+#     at = set(re.findall(r"[a-z0-9]+", a))
+#     bt = set(re.findall(r"[a-z0-9]+", b))
+#     if not at or not bt: return 0.0
+#     return len(at & bt) / len(at | bt)
 
-def _resolve_conflicts(
-    iem: IEMIndex,
-    pivot_entity: str,
-    candidates: list[ScoredField],
-    intent_obj: dict,
-    prefer_target_entity: bool = True,
-) -> list:
-    """
-    Group same-slot competitors across entities (e.g., orders.shipping_city vs customer.city),
-    rank by: (1) prefer target-entity, (2) closest join distance to pivot, (3) role weight,
-    (4) base score, (5) name similarity to pivot.
-    """
-    from .models import ConflictNote
-    # group by slot id
-    by_slot: dict[str, list[ScoredField]] = {}
-    for sf in candidates:
-        slot = _canonical_slot_name(sf.roleTop, sf.name)
-        if slot not in by_slot: by_slot[slot] = []
-        by_slot[slot].append(sf)
+# def _resolve_conflicts(
+#     iem: IEMIndex,
+#     pivot_entity: str,
+#     candidates: list[ScoredField],
+#     intent_obj: dict,
+#     prefer_target_entity: bool = True,
+# ) -> list:
+#     """
+#     Group same-slot competitors across entities (e.g., orders.shipping_city vs customer.city),
+#     rank by: (1) prefer target-entity, (2) closest join distance to pivot, (3) role weight,
+#     (4) base score, (5) name similarity to pivot.
+#     """
+#     from .models import ConflictNote
+#     # group by slot id
+#     by_slot: dict[str, list[ScoredField]] = {}
+#     for sf in candidates:
+#         slot = _canonical_slot_name(sf.roleTop, sf.name)
+#         if slot not in by_slot: by_slot[slot] = []
+#         by_slot[slot].append(sf)
 
-    target_ent = None
-    tgt = (intent_obj or {}).get("target")
-    if isinstance(tgt, str) and "." in tgt:
-        target_ent = tgt.split(".")[0]
+#     target_ent = None
+#     tgt = (intent_obj or {}).get("target")
+#     if isinstance(tgt, str) and "." in tgt:
+#         target_ent = tgt.split(".")[0]
 
-    notes: list = []
-    fidx = _iem_field_lookup(iem)
+#     notes: list = []
+#     fidx = _iem_field_lookup(iem)
 
-    for slot, sfs in by_slot.items():
-        # only "conflict" if same-slot appears across >1 distinct entity
-        ents = {sf.entity for sf in sfs}
-        if len(ents) <= 1:
-            continue
+#     for slot, sfs in by_slot.items():
+#         # only "conflict" if same-slot appears across >1 distinct entity
+#         ents = {sf.entity for sf in sfs}
+#         if len(ents) <= 1:
+#             continue
 
-        scored: list[tuple[float, ScoredField]] = []
-        for sf in sfs:
-            pref = 0.0
-            why_bits = []
-            # (1) prefer explicit target entity
-            if prefer_target_entity and target_ent and sf.entity == target_ent:
-                pref += 0.12
-                why_bits.append("preferTargetEntity")
-            # (2) closer to pivot entity
-            if pivot_entity:
-                hops = _join_distance(iem, pivot_entity, sf.entity, max_hops=4)
-                hop_bonus = max(0.0, (3.0 - min(hops, 3)) * 0.05)  # 0.15 → 0.10 → 0.05 → 0
-                pref += hop_bonus
-                if hop_bonus > 0: why_bits.append("closestJoin")
-            # (3) role weight (stored in IEM role map)
-            fmeta = fidx.get((sf.entity, sf.name))
-            role_w = 0.0
-            if fmeta and fmeta.role:
-                role_w = max(fmeta.role.values())
-                pref += 0.05 * role_w
-                if role_w > 0: why_bits.append("roleWeight")
-            # (4) base score as is
-            base = float(sf.score)
-            # (5) name similarity to pivot field (if pivot has a field name)
-            piv_field_name = None
-            if isinstance(tgt, str) and "." in tgt:
-                piv_field_name = tgt.split(".")[1]
-            if piv_field_name:
-                pref += 0.03 * _name_similarity(sf.name, piv_field_name)
+#         scored: list[tuple[float, ScoredField]] = []
+#         for sf in sfs:
+#             pref = 0.0
+#             why_bits = []
+#             # (1) prefer explicit target entity
+#             if prefer_target_entity and target_ent and sf.entity == target_ent:
+#                 pref += 0.12
+#                 why_bits.append("preferTargetEntity")
+#             # (2) closer to pivot entity
+#             if pivot_entity:
+#                 hops = _join_distance(iem, pivot_entity, sf.entity, max_hops=4)
+#                 hop_bonus = max(0.0, (3.0 - min(hops, 3)) * 0.05)  # 0.15 → 0.10 → 0.05 → 0
+#                 pref += hop_bonus
+#                 if hop_bonus > 0: why_bits.append("closestJoin")
+#             # (3) role weight (stored in IEM role map)
+#             fmeta = fidx.get((sf.entity, sf.name))
+#             role_w = 0.0
+#             if fmeta and fmeta.role:
+#                 role_w = max(fmeta.role.values())
+#                 pref += 0.05 * role_w
+#                 if role_w > 0: why_bits.append("roleWeight")
+#             # (4) base score as is
+#             base = float(sf.score)
+#             # (5) name similarity to pivot field (if pivot has a field name)
+#             piv_field_name = None
+#             if isinstance(tgt, str) and "." in tgt:
+#                 piv_field_name = tgt.split(".")[1]
+#             if piv_field_name:
+#                 pref += 0.03 * _name_similarity(sf.name, piv_field_name)
 
-            final = base + pref
-            scored.append((final, sf))
+#             final = base + pref
+#             scored.append((final, sf))
 
-        scored.sort(key=lambda x: x[0], reverse=True)
-        winner = scored[0][1]
-        why_str = "|".join(sorted(set(
-            ["preferTargetEntity"] if (prefer_target_entity and target_ent and winner.entity == target_ent) else []
-        )) or ["composite"])
+#         scored.sort(key=lambda x: x[0], reverse=True)
+#         winner = scored[0][1]
+#         why_str = "|".join(sorted(set(
+#             ["preferTargetEntity"] if (prefer_target_entity and target_ent and winner.entity == target_ent) else []
+#         )) or ["composite"])
         
-        note = ConflictNote(
-            slot=slot,
-            candidates=[f"{sf.entity}.{sf.name}" for _, sf in scored],
-            resolution=f"{winner.entity}.{winner.name}",
-            why=why_str,
-            scores={f"{sf.entity}.{sf.name}": round(score, 6) for score, sf in scored}
-        )
-        notes.append(note)
+#         note = ConflictNote(
+#             slot=slot,
+#             candidates=[f"{sf.entity}.{sf.name}" for _, sf in scored],
+#             resolution=f"{winner.entity}.{winner.name}",
+#             why=why_str,
+#             scores={f"{sf.entity}.{sf.name}": round(score, 6) for score, sf in scored}
+#         )
+#         notes.append(note)
 
-    return notes
+#     return notes
 
 def score_target_context(iem, intent_vec, target_full: str, intent_obj: dict | None = None) -> dict:
     """

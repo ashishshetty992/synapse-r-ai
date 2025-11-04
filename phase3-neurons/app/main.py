@@ -46,6 +46,13 @@ def log_json(level: str, rid: str, event: str, **kwargs):
     payload = {"ts": time.time(), "level": level, "rid": rid, "event": event, **kwargs}
     logger.log(getattr(logging, level.upper(), logging.INFO), json.dumps(payload), extra={"request_id": rid})
 
+# Response helpers
+def ok(rid: str, payload: dict) -> dict:
+    return {"ok": True, "requestId": rid, **payload}
+
+def err(status: int, rid: str, msg: str) -> JSONResponse:
+    return JSONResponse({"ok": False, "error": msg, "requestId": rid}, status_code=status)
+
 _rate_buckets: dict[str, deque] = defaultdict(deque)  # per-IP sliding window
 
 app = FastAPI(title="SYNAPSE-R Phase 3 Neurons", version="0.1.0")
@@ -68,7 +75,13 @@ async def guardrails_mw(request: Request, call_next):
     request.state.request_id = rid
 
     # client ip (trusting uvicorn's client or X-Forwarded-For if present)
-    ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown").split(",")[0].strip()
+    if TRUST_PROXY and request.headers.get("x-forwarded-for"):
+        ip = request.headers["x-forwarded-for"].split(",")[0].strip()
+    else:
+        ip = request.client.host if request.client else "unknown"
+    
+    # user agent
+    ua = request.headers.get("user-agent")
 
     # tenant id (header → query → None)
     tenant = request.headers.get("x-tenant-id") or request.query_params.get("tenant")
@@ -92,6 +105,9 @@ async def guardrails_mw(request: Request, call_next):
 
         if isinstance(sc.get("weights"), dict):
             synapse.set_shaping_weights(sc["weights"])
+            # NEW: honor role_alpha_default if trainer wrote it under weights
+            if sc["weights"].get("role_alpha_default") is not None:
+                synapse.set_role_alpha_default(float(sc["weights"]["role_alpha_default"]))
             log_json("info", rid, "cfg.shaping.applied", weight_count=len(sc["weights"]))
 
         # entity blend + centroid gamma + roleAlpha default
@@ -148,7 +164,7 @@ async def guardrails_mw(request: Request, call_next):
             "x-ratelimit-reset": str(reset),
         }
         log_json("warning", rid, "ratelimit.block", path=str(request.url), method=request.method, ip=ip, limit=RL_MAX, window=RL_WINDOW_SEC)
-        return JSONResponse({"ok": False, "error": "rate_limited", "requestId": rid}, status_code=429, headers=headers)
+        return err(429, rid, "rate_limited")
     bucket.append(now)
 
     # timing + pass through
@@ -166,7 +182,7 @@ async def guardrails_mw(request: Request, call_next):
     response.headers["x-ratelimit-limit"] = str(RL_MAX)
     response.headers["x-ratelimit-remaining"] = str(remaining)
     # access log
-    log_json("info", rid, "http.access", path=str(request.url), method=request.method, status=getattr(response, "status_code", 200), ip=ip, dur_ms=duration_ms)
+    log_json("info", rid, "http.access", path=str(request.url), method=request.method, status=getattr(response, "status_code", 200), ip=ip, ua=ua, dur_ms=duration_ms, tenant=getattr(request.state, "tenant_id", None))
     return response
 
 UEM_PATH = os.environ.get("UEM_PATH", os.path.join(os.getcwd(), "uem.json"))
@@ -175,9 +191,11 @@ IEM_PATH = os.environ.get("IEM_PATH", os.path.join(os.getcwd(), "iem.json"))
 ROLE_CFG_PATH = os.environ.get("NEURONS_ROLE_CFG")  # optional JSON file
 SHAPING_CFG_PATH = os.environ.get("NEURONS_SHAPING_CFG")  # optional JSON file
 
-API_KEY = os.environ.get("NEURONS_API_KEY", "SYNAPSE@2025")  # set to enable auth; if None -> auth disabled
+API_KEY = os.environ.get("NEURONS_API_KEY")  # set to enable auth; if None -> auth disabled
 RL_MAX = int(os.environ.get("NEURONS_RL_MAX", "60"))         # requests per window
 RL_WINDOW_SEC = int(os.environ.get("NEURONS_RL_WINDOW", "60"))  # window size (s)
+TRUST_PROXY = os.environ.get("NEURONS_TRUST_PROXY", "0") == "1"
+OUT_BASE = os.path.abspath(os.environ.get("NEURONS_OUT_BASE", os.getcwd()))
 
 IEM: Optional[IEMIndex] = None  # hot state
 COVERAGE_CACHE: Optional[List[Dict[str, Any]]] = None  # coverage from last /generate
@@ -215,7 +233,7 @@ def boot():
             IEM = iem
     except Exception as e:
         # Non-fatal: service can still accept /iem/build
-        print("Startup warning:", e)
+        logger.warning(f"Startup warning: {e}")
     
     # apply optional configs
     from .synapse import set_role_config, set_shaping_weights
@@ -238,7 +256,7 @@ def iem_build(req: BuildIEMRequest = Body(...), request: Request = None):
     try:
         global IEM
         if req.dim is not None and (req.dim < 32 or req.dim > 2048):
-            return JSONResponse({"ok": False, "error": "dim out of range [32,2048]", "requestId": rid}, status_code=400)
+            return err(400, rid, "dim out of range [32,2048]")
 
         # load UEM
         if req.uem is not None:
@@ -246,7 +264,7 @@ def iem_build(req: BuildIEMRequest = Body(...), request: Request = None):
         else:
             path = req.uemPath or UEM_PATH
             if not os.path.exists(path):
-                return JSONResponse({"ok": False, "error": f"UEM file not found: {path}", "requestId": rid}, status_code=400)
+                return err(400, rid, f"UEM file not found: {path}")
             uem = _load_uem_from_path(path)
 
         dim = req.dim or 256
@@ -265,10 +283,10 @@ def iem_build(req: BuildIEMRequest = Body(...), request: Request = None):
         IEM = iem
 
         log_json("info", rid, "iem.build", dim=iem.dim, fields=len(iem.fields))
-        return BuildIEMResponse(ok=True, dim=iem.dim, fieldCount=len(iem.fields), savedTo=out_path)
+        return BuildIEMResponse(**ok(rid, {"dim": iem.dim, "fieldCount": len(iem.fields), "savedTo": out_path}))
     except Exception as e:
         log_json("error", rid, "iem.build.error", error=str(e))
-        return JSONResponse({"ok": False, "error": str(e), "requestId": rid}, status_code=500)
+        return err(500, rid, str(e))
 
 
 @app.post("/intent/encode", response_model=IntentEncoding)
@@ -281,19 +299,19 @@ def intent_encode(req: IntentRequest = Body(...), request: Request = None):
     if IEM is not None:
         vec = encode_intent_to_vocab(req.intent, IEM.vocab)
         log_json("info", rid, "intent.encode", dim=len(vec))
-        return IntentEncoding(version="intent/0.2", dim=len(IEM.vocab), vec=vec, vocab=IEM.vocab)
+        return IntentEncoding(version="intent/0.2", dim=len(IEM.vocab), vec=vec, vocab=IEM.vocab, requestId=rid)
     else:
         # free vocab mode
         vec, vocab = encode_intent_to_vocab(req.intent, None, return_vocab=True)
         log_json("info", rid, "intent.encode", dim=len(vec))
-        return IntentEncoding(version="intent/0.2", dim=len(vocab), vec=vec, vocab=vocab)
+        return IntentEncoding(version="intent/0.2", dim=len(vocab), vec=vec, vocab=vocab, requestId=rid)
 
 
 @app.post("/intent/encode_nl", response_model=IntentEncodingNL)
 def intent_encode_nl(req: NLRequest = Body(...), request: Request = None):
     rid = getattr(request.state, "request_id", str(uuid.uuid4()))
     if IEM is None:
-        return JSONResponse({"ok": False, "error": "IEM not loaded. Call /iem/build first.", "requestId": rid}, status_code=400)
+        return err(400, rid, "IEM not loaded. Call /iem/build first.")
     try:
         synonyms = load_synonyms()
         tenant = getattr(request.state, "tenant_id", None)
@@ -310,11 +328,12 @@ def intent_encode_nl(req: NLRequest = Body(...), request: Request = None):
                 "blend": out["blend"],
                 "text": req.text,
                 **out.get("debug", {}),
-            }
+            },
+            requestId=rid
         )
     except Exception as e:
         log_json("error", rid, "intent.encode_nl.error", error=str(e))
-        return JSONResponse({"ok": False, "error": str(e), "requestId": rid}, status_code=500)
+        return err(500, rid, str(e))
 
 
 @app.post("/synapse/match", response_model=MatchResponse)
@@ -326,19 +345,13 @@ def synapse_match(req: MatchRequest = Body(...), request: Request = None):
     """
     rid = getattr(request.state, "request_id", str(uuid.uuid4()))
     if IEM is None:
-        return JSONResponse(
-            {"ok": False, "error": "IEM not loaded. Call /iem/build first.", "requestId": rid},
-            status_code=400,
-        )
+        return err(400, rid, "IEM not loaded. Call /iem/build first.")
 
     if req.intentVec is not None:
         # user guarantees alignment to current IEM vocab
         intent_vec = req.intentVec
         if len(intent_vec) != len(IEM.vocab):
-            return JSONResponse(
-                {"ok": False, "error": "intentVec dimension does not match current IEM vocab", "requestId": rid},
-                status_code=400,
-            )
+            return err(400, rid, "intentVec dimension does not match current IEM vocab")
     else:
         intent_vec = encode_intent_to_vocab(req.intent or {}, IEM.vocab)
 
@@ -356,6 +369,7 @@ def synapse_match(req: MatchRequest = Body(...), request: Request = None):
         metric_alpha=req.metricAlpha,
     )
     out.debug["tenantId"] = getattr(request.state, "tenant_id", None)
+    out.debug["requestId"] = rid
     log_json("info", rid, "synapse.match", topFields=len(out.topFields))
     return out
 
@@ -364,7 +378,7 @@ def synapse_match(req: MatchRequest = Body(...), request: Request = None):
 def iem_verify(request: Request = None):
     rid = getattr(request.state, "request_id", str(uuid.uuid4()))
     if IEM is None:
-        return JSONResponse({"ok": False, "error": "IEM not loaded", "requestId": rid}, status_code=400)
+        return err(400, rid, "IEM not loaded")
 
     # RoleBoost per-field
     role_boost_stats: List[RoleBoostStat] = []
@@ -425,10 +439,98 @@ def _is_money_op(metric: Dict[str, Any] | None) -> bool:
     op = (metric or {}).get("op","").lower()
     return op in {"sum","avg","mean","median"}
 
+def _apply_preferences(
+    cands: List[Dict[str, Any]],
+    prefer_roles: Optional[List[str]] = None,
+    prefer_targets: Optional[List[str]] = None,
+    prefer_targets_boost: Optional[Dict[str, float]] = None,
+    alias_targets: Optional[List[str]] = None,
+    ask: Optional[str] = None,
+    money_op: bool = False,
+    fill_cfg: Optional[Dict[str, Any]] = None
+) -> List[Dict[str, Any]]:
+    """
+    Apply weighted preferences to candidate fields.
+    Returns list of dicts with updated scores.
+    """
+    fill_cfg = fill_cfg or {}
+    role_bonus = float(fill_cfg.get("preferBonus", 0.08))
+    target_bonus = 0.12  # a bit stronger than before
+    alias_bonus = 0.30   # strong: when NL explicitly says city
+    granularity_bonus_city = 0.12  # city > country when ask=top_k
+    money_penalty = float(fill_cfg.get("moneyPivotPenalty", 0.08))
+    unknown_penalty = float(fill_cfg.get("unknownPenalty", 0.1))
+    
+    # fast lookup
+    idx = {(c["entity"], c["name"]): i for i, c in enumerate(cands)}
+    
+    def bump(field: str, delta: float):
+        """Apply delta boost to a field if it exists."""
+        if "." in field:
+            ent, name = field.split(".", 1)
+            j = idx.get((ent, name))
+            if j is not None:
+                cands[j]["score"] += delta
+    
+    # 1) role-level nudges
+    if prefer_roles:
+        pr = set(prefer_roles)
+        for c in cands:
+            if c.get("roleTop") in pr:
+                c["score"] += role_bonus
+    
+    # 2) list-based targets (uniform)
+    if prefer_targets:
+        for t in prefer_targets:
+            bump(t, target_bonus)
+    
+    # 3) weighted boosts
+    if prefer_targets_boost:
+        for t, delta in prefer_targets_boost.items():
+            bump(t, float(delta))
+    
+    # 4) alias/context bonus from NL encoder topAliasHits
+    if alias_targets:
+        for t in alias_targets:
+            # Only apply to schema-looking targets (entity.field format)
+            if "." in t and t.count(".") == 1:
+                bump(t, alias_bonus)
+    
+    # 5) granularity rule: city beats country for top_k (count/sum)
+    if ask == "top_k":
+        bump("orders.shipping_city", granularity_bonus_city)
+        # no negative penalty to country; just a positive nudge to city
+    
+    # 6) money pivot penalty (only affects choosing pivot target)
+    if money_op:
+        for c in cands:
+            if c.get("roleTop") == "money":
+                c["score"] -= money_penalty
+    
+    # 7) unknown penalty (downrank unknowns)
+    for c in cands:
+        if c.get("roleTop") == "unknown":
+            c["score"] -= unknown_penalty
+    
+    cands.sort(key=lambda x: x["score"], reverse=True)
+    return cands
+
+def _explain_candidate_scores(cands: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Generate explain output for candidate scores."""
+    return [
+        {
+            "field": f"{c['entity']}.{c['name']}",
+            "role": c.get("roleTop", "unknown"),
+            "score": round(c["score"], 6)
+        }
+        for c in cands
+    ]
+
 @app.get("/iem/show")
-def iem_show():
+def iem_show(request: Request = None):
+    rid = getattr(request.state, "request_id", str(uuid.uuid4()))
     if IEM is None:
-        return {"ok": False, "error": "IEM not loaded"}
+        return err(400, rid, "IEM not loaded")
     ents = defaultdict(list)
     for f in IEM.fields:
         ents[f.entity].append({
@@ -440,14 +542,14 @@ def iem_show():
     out = []
     for e, fields in ents.items():
         out.append({"entity": e, "fields": fields})
-    return {"ok": True, "dim": IEM.dim, "entities": out}
+    return ok(rid, {"dim": IEM.dim, "entities": out})
 
 @app.post("/synapse/fill", response_model=FillResponse)
 def synapse_fill(req: FillRequest = Body(...), request: Request = None):
     """Slot filling + conflict resolve + AlignPlus™."""
-    rid = getattr(request.state, "request_id", "-")
+    rid = getattr(request.state, "request_id", str(uuid.uuid4()))
     if IEM is None:
-        return JSONResponse({"ok": False, "error": "IEM not loaded. Call /iem/build first.", "requestId": rid}, status_code=400)
+        return err(400, rid, "IEM not loaded. Call /iem/build first.")
     
     try:
         # Import synapse for _CONFIG access
@@ -472,30 +574,29 @@ def synapse_fill(req: FillRequest = Body(...), request: Request = None):
         )
 
         # 2) Post-process field candidates → apply fill knobs
-        prefer_roles = set((req.preferRoles or []))
         money_op = _is_money_op(req.intent.get("metric"))
 
         raw_fields = match_out.topFields[:]  # ScoredField list
-        adjusted = []
-        for sf in raw_fields:
-            r = sf.roleTop or _role_of(sf)   # be safe
-            score = float(sf.score)
-
-            # (a) preferRoles bonus
-            if r in prefer_roles:
-                score += float(fill_cfg["preferBonus"])
-
-            # (b) money pivot penalty (only affects choosing pivot target; still keep candidate ranked)
-            if money_op and r == "money":
-                score -= float(fill_cfg["moneyPivotPenalty"])
-
-            # (c) unknown penalty (downrank unknowns)
-            if r == "unknown":
-                score -= float(fill_cfg["unknownPenalty"])
-
-            adjusted.append(ScoredField(entity=sf.entity, name=sf.name, score=score, roleTop=r))
-
-        # sort after adjustments
+        
+        # Convert ScoredField to dict for _apply_preferences
+        cands = [{"entity": sf.entity, "name": sf.name, "score": float(sf.score), "roleTop": sf.roleTop or _role_of(sf)} for sf in raw_fields]
+        
+        # Apply weighted preferences
+        adjusted_dicts = _apply_preferences(
+            cands,
+            prefer_roles=req.preferRoles,
+            prefer_targets=req.preferTargets,
+            prefer_targets_boost=req.preferTargetsBoost,
+            alias_targets=req.aliasTargets,
+            ask=req.intent.get("ask") if isinstance(req.intent, dict) else None,
+            money_op=money_op,
+            fill_cfg=fill_cfg
+        )
+        
+        # Convert back to ScoredField objects
+        adjusted = [ScoredField(entity=c["entity"], name=c["name"], score=c["score"], roleTop=c["roleTop"]) for c in adjusted_dicts]
+        
+        # sort after adjustments (already sorted by _apply_preferences, but ensure)
         adjusted.sort(key=lambda x: x.score, reverse=True)
 
         # 3) Enforce maxUnknownInTopK clamp
@@ -564,8 +665,15 @@ def synapse_fill(req: FillRequest = Body(...), request: Request = None):
             "rolePrior": match_out.debug.get("rolePrior", {}),
             "matchDebug": match_out.debug,
             "fillConfigUsed": fill_cfg,
-            "preferRolesUsed": list(prefer_roles),
+            "preferRolesUsed": list(req.preferRoles or []),
+            "preferTargetsUsed": req.preferTargets or [],
+            "preferTargetsBoostUsed": req.preferTargetsBoost or {},
+            "aliasTargetsUsed": req.aliasTargets or [],
         }
+        
+        # Add explain if requested
+        if req.debugExplain:
+            debug["targetExplain"] = _explain_candidate_scores(adjusted_dicts)
 
         return FillResponse(
             ok=True,
@@ -581,10 +689,11 @@ def synapse_fill(req: FillRequest = Body(...), request: Request = None):
             ) for c in conflicts_resolved],
             alignPlus=AlignPlus(Abase=abase, Coverage=coverage, OffSchemaRate=off_schema_rate, Aplus=aplus),
             debug=debug,
+            requestId=rid
         )
     except Exception as e:
         log_json("error", rid, "synapse.fill.error", error=str(e))
-        return JSONResponse({"ok": False, "error": str(e), "requestId": rid}, status_code=500)
+        return err(500, rid, str(e))
 
 
 @app.post("/synapse/paths", response_model=PathsResponse)
@@ -592,7 +701,7 @@ def synapse_paths(req: PathsRequest = Body(...), request: Request = None):
     """Join path inference with PathScore™."""
     rid = getattr(request.state, "request_id", str(uuid.uuid4()))
     if IEM is None:
-        return JSONResponse({"ok": False, "error": "IEM not loaded. Call /iem/build first.", "requestId": rid}, status_code=400)
+        return err(400, rid, "IEM not loaded. Call /iem/build first.")
     try:
         startE = None; goalE = None; intent_vec = None
 
@@ -618,49 +727,65 @@ def synapse_paths(req: PathsRequest = Body(...), request: Request = None):
             if ge: goalE = ge
 
         if not startE or not goalE:
-            return PathsResponse(ok=True, paths=[], debug={"warn": "start or goal entity missing"})
+            return PathsResponse(ok=True, paths=[], debug={"warn": "start or goal entity missing", "requestId": rid})
 
         adj = _build_join_graph(IEM)
         raw_paths = _bfs_paths(adj, start=startE, goal=goalE, max_hops=req.maxHops)
 
         # get active pathScoring config
         from . import synapse
+        from .deps import clamp
         ps_cfg = dict(synapse._CONFIG.get("pathScoring", {}))
+        warns = []
         
-        # merge per-call overrides if present
+        # merge per-call overrides if present (with clamping)
         if req.pathScoringOverrides:
             for k, v in (req.pathScoringOverrides or {}).items():
                 if k in ps_cfg and v is not None:
-                    ps_cfg[k] = v
+                    clamped = clamp(f"pathScoring.{k}", float(v))
+                    if clamped != float(v):
+                        warns.append(f"clamped {k} from {v} to {clamped}")
+                    ps_cfg[k] = clamped
+        
+        # score paths and normalize
+        raw = []
+        for p in raw_paths:
+            s = _path_score(IEM, intent_vec or [0.0]*IEM.dim, p, cfg=ps_cfg)
+            edges = [PathEdge(srcEntity=a, srcField=b, dstEntity=c, dstField=d, why=e) for (a,b,c,d,e) in p]
+            raw.append((s, edges))
+        
+        raw.sort(key=lambda t: t[0], reverse=True)
+        max_s = raw[0][0] if raw else 1.0
         
         out: List[PathCandidate] = []
-        for p in raw_paths:
-            score = _path_score(IEM, intent_vec or [0.0]*IEM.dim, p, cfg=ps_cfg)
-            path_edges = [PathEdge(srcEntity=a, srcField=b, dstEntity=c, dstField=d, why=e) for (a,b,c,d,e) in p]
-            out.append(PathCandidate(path=path_edges, score=score, hops=len(p)))
+        for s, edges in raw[:req.topK]:
+            out.append(PathCandidate(path=edges, score=s, hops=len(edges)))
 
-        out.sort(key=lambda x: x.score, reverse=True)
         return PathsResponse(
             ok=True, 
-            paths=out[:req.topK], 
+            paths=out, 
             debug={
                 "start": startE, 
                 "goal": goalE, 
                 "maxHops": req.maxHops, 
-                "found": len(out),
-                "pathScoringUsed": ps_cfg
+                "found": len(raw),
+                "pathScoringUsed": ps_cfg,
+                "scoreMax": max_s,
+                "scoreNormHint": "score / scoreMax",
+                "warn": warns if warns else None,
+                "requestId": rid
             }
         )
     except Exception as e:
         log_json("error", rid, "synapse.paths.error", error=str(e))
-        return JSONResponse({"ok": False, "error": str(e), "requestId": rid}, status_code=500)
+        return err(500, rid, str(e))
 
 
 @app.post("/synapse/explain", response_model=ExplainResponse)
 def synapse_explain(req: ExplainRequest = Body(...), request: Request = None):
     rid = getattr(request.state, "request_id", str(uuid.uuid4()))
     if IEM is None:
-        return JSONResponse({"ok": False, "error": "IEM not loaded. Call /iem/build first.", "requestId": rid}, status_code=400)
+        return err(400, rid, "IEM not loaded. Call /iem/build first.")
     try:
         # re-use fill (without mutating default behavior) to get pivot + conflicts
         from .models import FillRequest
@@ -697,7 +822,8 @@ def synapse_explain(req: ExplainRequest = Body(...), request: Request = None):
             targetChosen=fobj.intentFilled.get("target"),
             explains=explains,
             alignPlus=fobj.alignPlus,
-            debug={"requestId": rid}
+            debug={},
+            requestId=rid
         )
         # log
         try:
@@ -719,7 +845,7 @@ def synapse_explain(req: ExplainRequest = Body(...), request: Request = None):
         return resp
     except Exception as e:
         log_json("error", rid, "synapse.explain.error", error=str(e))
-        return JSONResponse({"ok": False, "error": str(e), "requestId": rid}, status_code=500)
+        return err(500, rid, str(e))
 
 
 @app.get("/examples/coverage")
@@ -732,23 +858,28 @@ def get_coverage():
 
 @app.post("/generate", response_model=GenerateExampleResponse)
 def generate(req: GenerateRequest = Body(...), request: Request = None):
-    rid = getattr(request.state, "request_id", "-")
+    rid = getattr(request.state, "request_id", str(uuid.uuid4()))
     if IEM is None:
-        return JSONResponse({"ok": False, "error": "IEM not loaded. Call /iem/build first.", "requestId": rid}, status_code=400)
+        return err(400, rid, "IEM not loaded. Call /iem/build first.")
     try:
         global COVERAGE_CACHE
         items_raw, cover = generate_all(IEM, per_entity=req.perEntity, strict=req.strict)
         COVERAGE_CACHE = cover  # cache for /examples/coverage endpoint
         written = 0
         cov_path = None
+        target_dir = None
         if req.writeFiles:
-            written = write_examples(items_raw, req.outDir)
+            # NEW: normalize/guard outDir under OUT_BASE
+            target_dir = os.path.abspath(req.outDir)
+            if not (target_dir + os.sep).startswith(OUT_BASE + os.sep):
+                return err(400, rid, f"outDir must be inside NEURONS_OUT_BASE ({OUT_BASE})")
+            written = write_examples(items_raw, target_dir)
             if req.writeCoverage:
-                cov_path = write_coverage(cover, req.outDir)
+                cov_path = write_coverage(cover, target_dir)
         items = [GenIQL(**it) for it in items_raw]
         coverage = [CoverageStat(**c) for c in cover]
-        log_json("info", rid, "generate.examples", total=len(items), written=written, outDir=req.outDir)
-        return GenerateExampleResponse(ok=True, total=len(items), written=written, outDir=req.outDir if req.writeFiles else None, coverageFile=cov_path, items=items, coverage=coverage)
+        log_json("info", rid, "generate.examples", total=len(items), written=written, outDir=(target_dir if req.writeFiles else None))
+        return GenerateExampleResponse(**ok(rid, {"total": len(items), "written": written, "outDir": (target_dir if req.writeFiles else None), "coverageFile": cov_path, "items": items, "coverage": coverage}))
     except Exception as e:
         log_json("error", rid, "generate.error", error=str(e))
-        return JSONResponse({"ok": False, "error": str(e), "requestId": rid}, status_code=500)
+        return err(500, rid, str(e))

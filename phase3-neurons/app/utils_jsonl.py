@@ -6,8 +6,17 @@ from typing import Iterable
 
 def append_jsonl(path: str, obj: dict):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, 'a') as f:
-        f.write(json.dumps(obj, ensure_ascii=False) + '\n')
+    # best-effort atomic append on POSIX: write temp then append
+    tmp = f"{path}.tmp"
+    line = json.dumps(obj, ensure_ascii=False) + "\n"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        f.write(line)
+    with open(tmp, "rb") as src, open(path, "ab") as dst:
+        dst.write(src.read())
+    try:
+        os.remove(tmp)
+    except Exception:
+        pass
 
 
 def read_jsonl(path: str, limit: int|None=None) -> list[dict]:
