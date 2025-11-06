@@ -1,0 +1,16 @@
+{
+  "intent": {
+    "ask": "top_k",
+    "metric": {
+      "op": "sum",
+      "target": "orders.total_amount"
+    },
+    "target": "orders.shipping_city"
+  },
+  "expected": {
+    "target": "orders.shipping_city"
+  },
+  "notes": "City should beat country for top_k revenue",
+  "tenant": "acme",
+  "ts": 1762248559912
+}

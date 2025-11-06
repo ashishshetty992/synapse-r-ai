@@ -2,7 +2,6 @@ from typing import Dict, Any, List, Tuple
 import os, json, re
 from .iem import IEMIndex
 
-# Allowed roles for group-by pivots (never id or timestamp)
 PIVOT_OK = ("category", "geo", "text")
 
 def _best_dim(iem: IEMIndex, entity: str) -> Tuple[str, float] | None:
@@ -26,7 +25,6 @@ def _top_field_for_role(iem: IEMIndex, entity: str, role: str) -> Tuple[str, flo
         if f.entity != entity:
             continue
         w = (f.role or {}).get(role, 0.0)
-        # if your IEM adds roleTop, a tiny fallback weight:
         if w == 0 and getattr(f, "role", None) and isinstance(f.role, dict) and f.role.get(role, 0) == 0:
             pass
         if w > best_w:
@@ -110,7 +108,7 @@ def _is_unsafe_pivot(field_name: str) -> bool:
 def _is_safe_item(item: Dict[str,Any]) -> bool:
     group_by = item.get("iql", {}).get("groupBy", [])
     if not group_by: 
-        return True  # trend/compare don't group
+        return True
     f = group_by[0].split(".")[-1] if "." in group_by[0] else group_by[0]
     return not _is_unsafe_pivot(f)
 
@@ -130,16 +128,13 @@ def _backfill(iem: IEMIndex, entity: str, per_entity: int, items: List[Dict[str,
     def push(title, intent, iql):
         items.append({"title": title, "entity": entity, "intent": intent, "iql": iql, "variant": True})
 
-    # 1) more time variants
     if need and money and ts:
-        # weekly trend
         iql = _mk_iql_trend(entity, money[0], ts[0]).copy()
         iql["bucket"]["grain"] = "week"
         push(_title(f"{entity}: revenue trend (weekly, 12w)"), 
              {"ask":"trend","metric":{"op":"sum","target":f"{entity}.{money[0]}"}}, iql)
         need = max(0, per_entity - len(items))
 
-    # 2) top_k by geo/category/text using qty
     if need and qty:
         dim_any = _best_dim(iem, entity)
         if dim_any:
@@ -149,7 +144,6 @@ def _backfill(iem: IEMIndex, entity: str, per_entity: int, items: List[Dict[str,
                  iql)
             need = max(0, per_entity - len(items))
 
-    # 3) final nops – duplicate safe compare (if available)
     if need and money and ts:
         iql = _mk_iql_compare(entity, money[0], ts[0])
         push(_title(f"{entity}: revenue compare (QoQ proxy: this vs last month)"),
@@ -158,7 +152,6 @@ def _backfill(iem: IEMIndex, entity: str, per_entity: int, items: List[Dict[str,
     return items[:per_entity]
 
 def generate_for_entity(iem:IEMIndex, entity:str, per_entity:int=5, *, strict: bool=True) -> Tuple[List[Dict[str,Any]], Dict[str,bool]]:
-    # pick candidates
     money = _top_field_for_role(iem, entity, "money")
     ts    = _top_field_for_role(iem, entity, "timestamp")
     cat   = _top_field_for_role(iem, entity, "category")
@@ -176,7 +169,6 @@ def generate_for_entity(iem:IEMIndex, entity:str, per_entity:int=5, *, strict: b
     }
 
     items: List[Dict[str,Any]] = []
-    # 1) top_k by category (or safe fallback)
     if money and (cat or dim_any):
         dim_name = (cat[0] if cat else dim_any[0])
         items.append({
@@ -185,7 +177,6 @@ def generate_for_entity(iem:IEMIndex, entity:str, per_entity:int=5, *, strict: b
             "intent": {"ask":"top_k","metric":{"op":"sum","target":f"{entity}.{money[0]}"},"target":f"{entity}.{dim_name}"},
             "iql": _mk_iql_topk(entity, money[0], dim_name, 10)
         })
-    # 2) trend revenue daily (30d)
     if money and ts:
         items.append({
             "title": _title(f"{entity}: revenue trend (daily, 30d)"),
@@ -193,7 +184,6 @@ def generate_for_entity(iem:IEMIndex, entity:str, per_entity:int=5, *, strict: b
             "intent": {"ask":"trend","metric":{"op":"sum","target":f"{entity}.{money[0]}"}},
             "iql": _mk_iql_trend(entity, money[0], ts[0])
         })
-    # 3) compare this vs last month
     if money and ts:
         items.append({
             "title": _title(f"{entity}: revenue compare (this vs last month)"),
@@ -201,7 +191,6 @@ def generate_for_entity(iem:IEMIndex, entity:str, per_entity:int=5, *, strict: b
             "intent": {"ask":"compare","metric":{"op":"sum","target":f"{entity}.{money[0]}"}},
             "iql": _mk_iql_compare(entity, money[0], ts[0])
         })
-    # 4) top_k by geo
     if money and geo:
         items.append({
             "title": _title(f"{entity}: top {geo[0]} by revenue (30d)"),
@@ -209,7 +198,6 @@ def generate_for_entity(iem:IEMIndex, entity:str, per_entity:int=5, *, strict: b
             "intent": {"ask":"top_k","metric":{"op":"sum","target":f"{entity}.{money[0]}"},"target":f"{entity}.{geo[0]}"},
             "iql": _mk_iql_topk_geo(entity, money[0], geo[0], 10)
         })
-    # 5) top_k by quantity with safe dimension
     if qty and (cat or dim_any):
         dim_name = (cat[0] if cat else dim_any[0])
         items.append({
@@ -219,15 +207,12 @@ def generate_for_entity(iem:IEMIndex, entity:str, per_entity:int=5, *, strict: b
             "iql": _mk_iql_topk_qty(entity, qty[0], dim_name, 10)
         })
 
-    # strict filter (default): drop unsafe pivots
     if strict:
         items = [it for it in items if _is_safe_item(it)]
 
-    # backfill to reach per_entity, keeping safety
     if len(items) < per_entity:
         items = _backfill(iem, entity, per_entity, items, money, ts, cat, geo, qty)
 
-    # attach filenames
     for it in items[:per_entity]:
         it["file"] = f"{_slug(it['title'])}.iql.json"
     return items[:per_entity], cover

@@ -1,0 +1,18 @@
+{
+  "weights": {
+    "alias_alpha": 0.45,
+    "shape_alpha": 0.3,
+    "shape_beta": 0.2,
+    "metric_alpha": 0.4,
+    "role_alpha_default": 0.3
+  },
+  "pathScoring": {
+    "idPrior": 0.1,
+    "fkBonus": 0.05,
+    "lengthPriorBase": 0.92,
+    "cosineWeight": 0.75
+  },
+  "alignPlus": {
+    "osrZeroWhenNoText": true
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "top1_acc": 0.0,
+  "mrr": 0.2222222222222222,
+  "slot_f1": 0.0,
+  "aplus_mean": 0.5116093110274014,
+  "pathscore_mean": 0.0,
+  "n_golden": 2,
+  "n_feedback": 42
+}

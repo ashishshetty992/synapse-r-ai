@@ -1,0 +1,98 @@
+
+=== TEST 1: Per-request pathScoringOverrides ===
+{
+  "pathScoringUsed": {
+    "idPrior": 0.08,
+    "fkBonus": 0.03,
+    "lengthPriorBase": 0.92,
+    "cosineWeight": 0.75,
+    "pkToFkBonus": 0.0,
+    "fkToPkBonus": 0.0,
+    "bridgePenalty": 0.0,
+    "hubPenalty": 0.0,
+    "hubDegreeThreshold": 8,
+    "fanoutPenalty": 0.0,
+    "_source": "active"
+  },
+  "score": 0.16128489513515223,
+  "final": 0.161285
+}
+
+=== TEST 2: Baseline-only experiment ===
+{
+  "pathScoringUsed": {
+    "idPrior": 0.12,
+    "fkBonus": 0.06,
+    "lengthPriorBase": 0.9,
+    "cosineWeight": 0.75,
+    "pkToFkBonus": 0.0,
+    "fkToPkBonus": 0.0,
+    "bridgePenalty": 0.0,
+    "hubPenalty": 0.0,
+    "hubDegreeThreshold": 8,
+    "fanoutPenalty": 0.0,
+    "_source": "tenant"
+  },
+  "score": 0.17352870176264892,
+  "final": 0.173529
+}
+
+=== TEST 3: Tenant/global shaping.json knobs ===
+{
+  "pathScoringUsed": {
+    "idPrior": 0.12,
+    "fkBonus": 0.06,
+    "lengthPriorBase": 0.9,
+    "cosineWeight": 0.75,
+    "pkToFkBonus": 0.0,
+    "fkToPkBonus": 0.0,
+    "bridgePenalty": 0.0,
+    "hubPenalty": 0.0,
+    "hubDegreeThreshold": 8,
+    "fanoutPenalty": 0.0,
+    "_source": "active"
+  },
+  "score": 0.17352870176264892,
+  "final": 0.173529
+}
+
+=== Parity check across all modes ===
+
+File: overrides
+{
+  "ok": true,
+  "rows": [
+    {
+      "i": 0,
+      "score": 0.16128489513515223,
+      "final": 0.161285,
+      "diff": -1.0486484777749716e-07
+    }
+  ]
+}
+
+File: baseline
+{
+  "ok": true,
+  "rows": [
+    {
+      "i": 0,
+      "score": 0.17352870176264892,
+      "final": 0.173529,
+      "diff": -2.982373510651559e-07
+    }
+  ]
+}
+
+File: shaping
+{
+  "ok": true,
+  "rows": [
+    {
+      "i": 0,
+      "score": 0.17352870176264892,
+      "final": 0.173529,
+      "diff": -2.982373510651559e-07
+    }
+  ]
+}

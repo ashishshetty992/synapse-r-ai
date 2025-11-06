@@ -4,7 +4,6 @@ from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field, ConfigDict
 
 
-# ---------- UEM (input schema) ----------
 class UEMRef(BaseModel):
     entity: str
     field: str
@@ -31,7 +30,6 @@ class UEM(BaseModel):
     entities: List[UEMEntity]
 
 
-# ---------- IEM (schema embeddings) ----------
 class IEMFieldEmbedding(BaseModel):
     entity: str
     name: str
@@ -54,16 +52,15 @@ class JoinEdge(BaseModel):
 
 
 class IEMDoc(BaseModel):
-    version: str = "iem/0.3"  # bump minor version since schema grows
+    version: str = "iem/0.3"
     dim: int
     vocab: List[str]
     fields: List[IEMFieldEmbedding]
     roleCentroids: Optional[Dict[str, List[float]]] = None
     entities: Optional[List[IEMEntityEmbedding]] = None
-    joins: Optional[List[JoinEdge]] = None  # <-- add this
+    joins: Optional[List[JoinEdge]] = None
 
 
-# ---------- REST: /iem/build ----------
 class BuildIEMRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     uem: Optional[UEM] = None
@@ -80,7 +77,6 @@ class BuildIEMResponse(BaseModel):
     requestId: Optional[str] = None
 
 
-# ---------- REST: /intent/encode ----------
 class IntentRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     intent: Dict[str, Any]
@@ -94,7 +90,6 @@ class IntentEncoding(BaseModel):
     requestId: Optional[str] = None
 
 
-# ---------- REST: /synapse/match ----------
 class MatchRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     intent: Optional[Dict[str, Any]] = None
@@ -135,7 +130,7 @@ class RoleBoostStat(BaseModel):
 
 
 class DriftAlert(BaseModel):
-    field: str  # "entity.field"
+    field: str
     aliasChange: float
     vecDrift: float
     warning: Optional[str] = None
@@ -166,9 +161,9 @@ class IntentEncodingNL(BaseModel):
     vec: List[float]
     vocab: List[str]
     debug: Optional[Dict[str, Any]] = None
+    requestId: Optional[str] = None
 
 
-# ---------- Neuron-3: Slot Fill + AlignPlus + PathScore ----------
 class PathEdge(BaseModel):
     srcEntity: str
     srcField: str
@@ -189,7 +184,7 @@ class PathsRequest(BaseModel):
     goal: Optional[str] = None
     maxHops: int = 2
     topK: int = 5
-    pathScoringOverrides: Optional[Dict[str, Any]] = None  # NEW
+    pathScoringOverrides: Optional[Dict[str, Any]] = None
 
 
 class PathsResponse(BaseModel):
@@ -208,9 +203,9 @@ class FillRequest(BaseModel):
     aliasTargets: Optional[List[str]] = None
     debugExplain: Optional[bool] = False
     fillOverrides: Optional[Dict[str, Any]] = None
-    preferTargetEntity: Optional[bool] = True  # NEW: tie-break toward explicit target's entity
-    text: Optional[str] = None  # keep for backward compat
-    topKEntities: Optional[int] = 5  # keep for backward compat
+    preferTargetEntity: Optional[bool] = True
+    text: Optional[str] = None
+    topKEntities: Optional[int] = 5
     roleAlpha: Optional[float] = None
     aliasAlpha: Optional[float] = None
     shapeAlpha: Optional[float] = None
@@ -219,11 +214,11 @@ class FillRequest(BaseModel):
 
 
 class ConflictNote(BaseModel):
-    slot: str                              # e.g. "city"
-    candidates: List[str]                  # ["orders.shipping_city","customer.city", ...]
-    resolution: Optional[str] = None       # chosen one (entity.field)
-    why: Optional[Dict[str, Any]] = None   # structured: {weights, factors...}
-    scores: Optional[List[Dict[str, Any]]] = None  # per-candidate: [{target, score, ...why...}]
+    slot: str
+    candidates: List[str]
+    resolution: Optional[str] = None
+    why: Optional[Dict[str, Any]] = None
+    scores: Optional[List[Dict[str, Any]]] = None
 
 
 class AlignPlus(BaseModel):
@@ -234,9 +229,9 @@ class AlignPlus(BaseModel):
 
 
 class ConflictOverride(BaseModel):
-    slot: str                         # "category" | "timestamp" | "geo" | "text"
-    prefer: Optional[str] = None      # target to prefer, e.g., "payment.method"
-    avoid: Optional[List[str]] = None # targets to downrank/remove
+    slot: str
+    prefer: Optional[str] = None
+    avoid: Optional[List[str]] = None
     acceptRoles: Optional[List[str]] = None
     minPathScore: Optional[float] = None
     minCosine: Optional[float] = None
@@ -318,7 +313,6 @@ class GenerateExampleResponse(BaseModel):
     requestId: Optional[str] = None
 
 
-# ---------- Feedback, Trainer, Eval, Fewshot ----------
 class FeedbackRecordIn(BaseModel):
     tenant: str = 'default'
     intent: Dict[str, Any]

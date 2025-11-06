@@ -1,4 +1,3 @@
-# phase3-neurons/app/fewshot.py
 from __future__ import annotations
 from fastapi import APIRouter, Query, Request
 import json, os

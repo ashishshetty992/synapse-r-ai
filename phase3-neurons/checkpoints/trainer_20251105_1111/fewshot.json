@@ -1,0 +1,20 @@
+{
+  "global": {
+    "hints": [
+      {
+        "tokens": [
+          "gmv",
+          "revenue"
+        ],
+        "boost": {
+          "role": "money",
+          "delta": 0.03
+        }
+      }
+    ],
+    "aliases": {
+      "gmv": "revenue"
+    }
+  },
+  "tenants": {}
+}

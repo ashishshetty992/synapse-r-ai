@@ -1,0 +1,12 @@
+{
+  "keywords": {
+    "geo": ["city","country","state","region","geo","shipping","pin","zipcode","pincode","zip","billing","address","location","place","province","area","district","postal"],
+    "quantity": ["count","qty","units","orders","items","volume","total","number","pieces","quantity"],
+    "money": ["amount","price","cost","revenue","total","gmv","sales","tax","subtotal","grand_total","dollar","income","earnings","profit","revenue_amount","total_amount","grand_total","collection","refund","expense","spend"],
+    "timestamp": ["date","day","week","month","year","created_at","updated_at","timestamp","ts","time","period","quarter","hour","minute","second","duration","age"],
+    "category": ["segment","status","category","method","channel","type","source","payment_method","payment","segment","tier","group","class","classification"],
+    "text": ["name","title","desc","description","notes","label","text","comment","remark","details","info","message","content"],
+    "id": ["id","*_id","order_id","customer_id","product_id","user_id","account_id","order","customer","product","sku","client","buyer","user"]
+  }
+}
+

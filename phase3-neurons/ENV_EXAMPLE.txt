@@ -1,0 +1,88 @@
+# ============================================================================
+# Environment Variables for Phase 3 Neurons Service
+# ============================================================================
+# Copy these to your .env file and update values as needed
+# Leave empty or unset to use defaults
+
+# ============================================================================
+# Security & Rate Limiting
+# ============================================================================
+# If set, requires x-api-key header for authentication
+# Example: NEURONS_API_KEY=your-secret-key-here
+NEURONS_API_KEY=
+
+# Maximum requests per rate limit window (default: 60)
+NEURONS_RL_MAX=60
+
+# Rate limit window size in seconds (default: 60)
+NEURONS_RL_WINDOW=60
+
+# ============================================================================
+# Request Limits
+# ============================================================================
+# Maximum request body size in bytes (default: 2,097,152 = 2MB)
+NEURONS_MAX_BODY=2097152
+
+# ============================================================================
+# Output & Configuration
+# ============================================================================
+# Base directory for generated files; /generate will refuse paths outside this directory
+# Example: NEURONS_OUT_BASE=/var/www/synapse/output
+NEURONS_OUT_BASE=
+
+# Set to "1" to trust X-Forwarded-For headers for IP resolution (default: 0)
+NEURONS_TRUST_PROXY=0
+
+# Root directory for configuration files (default: config/)
+# Example: NEURONS_CFG_ROOT=/etc/synapse/config
+NEURONS_CFG_ROOT=
+
+# Path to synonyms.json file
+# Example: NEURONS_SYNONYMS=/path/to/synonyms.json
+NEURONS_SYNONYMS=
+
+# Set to "1" to enable hot-reloading of configs (default: 0)
+NEURONS_CFG_HOT=0
+
+# ============================================================================
+# Paths
+# ============================================================================
+# Path to UEM (Universal Entity Model) JSON file
+# Example: UEM_PATH=/path/to/uem.json
+UEM_PATH=
+
+# Path to IEM (Intelligent Embedding Model) JSON file
+# Example: IEM_PATH=/path/to/iem.json
+IEM_PATH=
+
+# ============================================================================
+# Optional Features
+# ============================================================================
+# Optional JSON file for role configuration
+# Example: NEURONS_ROLE_CFG=/path/to/role.json
+NEURONS_ROLE_CFG=
+
+# Optional JSON file for shaping configuration
+# Example: NEURONS_SHAPING_CFG=/path/to/shaping.json
+NEURONS_SHAPING_CFG=
+
+# ============================================================================
+# Trainer & Canary
+# ============================================================================
+# Set to "true" to enable shadow mode (never change decisions; only attach shadow comparisons)
+# Example: TRAINER_SHADOW_ONLY=true
+TRAINER_SHADOW_ONLY=false
+
+# Comma-separated list of tenant IDs allowed to use trainer knobs
+# If empty, all tenants can use trainer knobs
+# Example: TRAINER_TENANT_CANARY=acme,shipyaari,test-tenant
+TRAINER_TENANT_CANARY=
+
+# ============================================================================
+# Notes
+# ============================================================================
+# Prometheus metrics are available at /metrics endpoint if prometheus_client is installed
+# 
+# Request headers (not env vars, but useful to know):
+#   - x-experiment: train-shadow (per-request header to emit shadow debug comparisons)
+#   - x-tenant-id (tenant identifier for multi-tenant configurations)

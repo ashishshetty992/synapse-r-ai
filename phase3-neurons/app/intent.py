@@ -4,7 +4,6 @@ from collections import defaultdict, Counter
 
 import numpy as np
 
-# ========== Typo-tolerant helpers ==========
 
 _word = re.compile(r"[a-z0-9_]+")
 
@@ -19,7 +18,6 @@ def _dl_dist(a: str, b: str) -> int:
     la, lb = len(a), len(b)
     if la == 0: return lb
     if lb == 0: return la
-    # 2 rows (rolling)
     prev = list(range(lb + 1))
     curr = [0]*(lb + 1)
     prev_prev = None
@@ -28,11 +26,10 @@ def _dl_dist(a: str, b: str) -> int:
         for j in range(1, lb + 1):
             cost = 0 if a[i-1] == b[j-1] else 1
             curr[j] = min(
-                curr[j-1] + 1,           # ins
-                prev[j] + 1,             # del
-                prev[j-1] + cost,        # sub
+                curr[j-1] + 1,
+                prev[j] + 1,
+                prev[j-1] + cost,
             )
-            # transposition
             if i > 1 and j > 1 and a[i-2] == b[j-1] and a[i-1] == b[j-2]:
                 if prev_prev is not None:
                     curr[j] = min(curr[j], prev_prev[j-2] + 1)
@@ -44,7 +41,6 @@ def _is_fuzzy(a: str, b: str, max_ratio: float = 0.34) -> bool:
     a, b = _norm(a), _norm(b)
     if not a or not b: return False
     d = _dl_dist(a, b)
-    # allow ~1 edit per 3 chars (bounded)
     allowed = max(1, int(round(max(len(a), len(b)) * max_ratio)))
     return d <= allowed
 
@@ -67,7 +63,6 @@ def _lower(s: str) -> str:
     return (s or "").lower().strip()
 
 def _normalize_tokens_with_aliases(tokens: List[str], aliases: Dict[str, str]) -> List[str]:
-    # token-level alias normalization (e.g., mnth→month, qtr→quarter)
     amap = { _lower(k): _lower(v) for k, v in (aliases or {}).items() }
     return [amap.get(_lower(t), t) for t in tokens]
 
@@ -82,18 +77,15 @@ def _detect_time_tags(fixed_text: str, tokens: List[str], time_cfg: Dict[str, An
     rel_map = { _lower(k): str(v) for k, v in (time_cfg or {}).get("relative", {}).items() }
     aliases = { _lower(k): _lower(v) for k, v in (time_cfg or {}).get("aliases", {}).items() }
 
-    # normalize tokens by aliases and rebuild a space-joined string for phrase checks
     norm_tokens = _normalize_tokens_with_aliases(tokens, aliases)
     search_text = " ".join(norm_tokens).lower()
 
-    # greedy phrase match over configured relative phrases
     for ph, tag in sorted(rel_map.items(), key=lambda kv: len(kv[0]), reverse=True):
         if ph in search_text:
             hits.append((f"@relative.time:period={tag}", 1.15, "synonym"))
 
     return hits
 
-# shared n-grams
 def char_ngrams(s: str, n_min=2, n_max=5):
     s = f"##{s.lower()}##"
     for n in range(n_min, n_max + 1):
@@ -147,14 +139,12 @@ def encode_intent_to_vocab(intent: Dict[str, Any], vocab: List[str] | None, retu
     if vocab is None:
         vocab = _build_vocab_from_text(text, 256)
     dense = _dense_from_sparse(sparse, vocab)
-    # defensive l2
     n = math.sqrt(sum(x * x for x in dense)) or 1.0
     dense = [x / n for x in dense]
     if return_vocab:
         return dense, vocab
     return dense
 
-# ========== SynoMix™ v0 (F6 Formula Lab) ==========
 
 WORD_RE = re.compile(r"[a-z0-9_]+")
 SPACE_UNDERSCORE_REPLACERS = [("_", " "), (" ", "_")]
@@ -177,7 +167,6 @@ def _tokenize_with_phrases(text: str, phrase_set: Set[str]) -> List[str]:
     t = _norm_soft(text)
     tokens = []
     used = [False]*len(t)
-    # greedy phrase match (simple)
     for ph in sorted(phrase_set, key=lambda x: len(x), reverse=True):
         start = t.find(ph)
         while start != -1:
@@ -186,7 +175,6 @@ def _tokenize_with_phrases(text: str, phrase_set: Set[str]) -> List[str]:
                 tokens.append(ph)
                 for i in range(start, end): used[i] = True
             start = t.find(ph, end)
-    # add residual word tokens
     residual = "".join(ch if not used[i] else " " for i, ch in enumerate(t))
     tokens.extend(WORD_RE.findall(residual))
     return tokens
@@ -205,13 +193,10 @@ def _iem_alias_docs(iem) -> Dict[str, List[str]]:
     for f in iem.fields:
         target = f"{f.entity}.{f.name}"
         toks = set()
-        # canonical
         toks |= _variants(f.name)
         toks |= _variants(target)
-        # aliases
         for al in (f.aliases or []):
             toks |= _variants(al)
-        # split into words
         wordified = []
         for tt in toks:
             wordified.extend(WORD_RE.findall(tt))
@@ -253,7 +238,6 @@ def _synonym_candidates(tokens: List[str], synonyms: Dict[str, Any]) -> List[Tup
     """
     From synonyms.json produce (target, score, why) triples.
     """
-    # flatten synonyms: key_phrase -> [targets...]
     flat = {}
     phrase_set = set()
     for _, mp in (synonyms or {}).items():
@@ -262,13 +246,11 @@ def _synonym_candidates(tokens: List[str], synonyms: Dict[str, Any]) -> List[Tup
             flat[kk] = list(vs)
             if " " in kk: phrase_set.add(kk)
 
-    # match phrases first (tokens may already contain phrases)
     hits = []
     tokset = set(tokens)
     for tk in tokset:
         if tk in flat:
             for tgt in flat[tk]:
-                # base weight 1.0; small boost for multi-word phrases
                 w = 1.15 if " " in tk else 1.0
                 hits.append((tgt, w, "synonym"))
     return hits
@@ -299,12 +281,11 @@ def _vectorize_targets_with_weights(targets: List[Dict[str, Any]], iem_vocab: Li
     Build a vector by repeating target strings proportional to their weights, then
     using the existing encode_intent_to_vocab.
     """
-    # Build a pseudo-intent with weighted 'select' content
     select = []
     for item in targets:
         t = item["target"]
         w = max(0.0, float(item["score"]))
-        reps = int(round(min(4.0, w * scale)))  # cap repeats for stability
+        reps = int(round(min(4.0, w * scale)))
         for _ in range(max(1, reps)):
             select.append(t)
     pseudo = {"ask": "infer", "select": select}
@@ -324,13 +305,11 @@ def encode_intent_nl(text: str, iem, synonyms: Dict[str, Any],
       - vec_bm25 ← vectorize weighted targets from topAliasHits
       - vec_final ← normalize(alpha*cos + (1-alpha)*bm25)
     """
-    # Build lexicon for typo correction
     lexicon: Set[str] = set()
     for f in iem.fields:
         lexicon.add(_norm_soft(f.name))
         for al in (f.aliases or []):
             lexicon.add(_norm_soft(al))
-    # synonyms is a dict[str, dict[str, list[str]]]
     for cat, mp in (synonyms or {}).items():
         for k, vs in (mp or {}).items():
             lexicon.add(_norm_soft(k))
@@ -339,13 +318,11 @@ def encode_intent_nl(text: str, iem, synonyms: Dict[str, Any],
             elif isinstance(vs, list):
                 for v in vs: 
                     lexicon.add(_norm_soft(v))
-    # add time aliases from config
     for t in (time_cfg or {}).get("aliases", {}).values():
         lexicon.add(_norm_soft(str(t)))
     time_terms = ["month","mnth","quarter","qtr","week","wk","yesterday","today","last","this","previous","current"]
     for t in time_terms: lexicon.add(_norm_soft(t))
 
-    # Tokenize and typo-correct
     raw_text = text
     toks = _tokens(raw_text)
     
@@ -356,11 +333,10 @@ def encode_intent_nl(text: str, iem, synonyms: Dict[str, Any],
         if nt in lexicon:
             fixed.append(tok)
             continue
-        # find nearest lexicon term
         best = None
         best_len = 1e9
         for cand in lexicon:
-            if abs(len(cand) - len(nt)) > 3:  # cheap prune
+            if abs(len(cand) - len(nt)) > 3:
                 continue
             if _is_fuzzy(nt, cand):
                 d = _dl_dist(nt, cand)
@@ -375,33 +351,26 @@ def encode_intent_nl(text: str, iem, synonyms: Dict[str, Any],
     
     fixed_text = " ".join(fixed)
 
-    # 1) collect phrases from synonyms + time.json(relative phrases)
     phrase_set = set()
     for _, mp in (synonyms or {}).items():
         for k in (mp or {}).keys():
             if " " in k: phrase_set.add(_norm_soft(k))
-    # include time phrases from config (no hardcoding)
     for ph in ((time_cfg or {}).get("relative") or {}).keys():
         if " " in ph: phrase_set.add(_lower(ph))
 
     tokens = _tokenize_with_phrases(fixed_text, phrase_set)
 
-    # 2) alias docs + BM25
     docs = _iem_alias_docs(iem)
     tf, doc_len, avgdl, df = _bm25_build(docs)
     alias_scores = _bm25_score_query(tokens, tf, doc_len, avgdl, df, N=len(docs))
 
-    # 3) synonyms
     syn_hits = _synonym_candidates(tokens, synonyms)
 
-    # 4) time tags from config (table-driven; replaces hardcoded _detect_period)
     time_hits = _detect_time_tags(fixed_text, tokens, time_cfg or {})
     syn_hits.extend(time_hits)
 
-    # 5) combine
     top_alias_hits = _aggregate_candidates(alias_scores, syn_hits, topK=topK)
     
-    # 6) fallback when no hits
     debug = {}
     if not top_alias_hits:
         inferred_intent = {
@@ -410,17 +379,15 @@ def encode_intent_nl(text: str, iem, synonyms: Dict[str, Any],
             "target": _best_geo_field(iem),
         }
         debug["fallbackIntent"] = inferred_intent
-        # create a minimal stub to still produce a vector
         stub = {
             "ask": "infer",
             "select": tokens if tokens else ["unknown"],
             "target": inferred_intent["target"]
         }
         vec_cosine = encode_intent_to_vocab(stub, iem.vocab)
-        vec_bm25 = vec_cosine  # fallback: use same vec
+        vec_bm25 = vec_cosine
         vec = _l2_normalize(vec_cosine)
     else:
-        # 7) cosine side: small NL stub → use tokens + best targets as 'select'
         stub = {
             "ask": "infer",
             "select": tokens + [h["target"] for h in top_alias_hits[:3]],
@@ -428,15 +395,12 @@ def encode_intent_nl(text: str, iem, synonyms: Dict[str, Any],
         }
         vec_cosine = encode_intent_to_vocab(stub, iem.vocab)
 
-        # 8) BM25 vectorized from weighted targets
         vec_bm25 = _vectorize_targets_with_weights(top_alias_hits, iem.vocab)
 
-        # 9) blend
         blended = (np.array(vec_cosine, dtype=float) * float(alpha_cosine)) + \
                   (np.array(vec_bm25, dtype=float) * float(1.0 - alpha_cosine))
         vec = _l2_normalize(blended.tolist())
 
-    # 10) expose debug
     debug["corrections"] = corrections
     debug["fixedText"] = fixed_text
 

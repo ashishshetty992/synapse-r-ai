@@ -1,0 +1,47 @@
+# Makefile — test knob control strategies for /synapse/paths
+
+API_KEY = SYNAPSE@2025
+TENANT = acme
+ENDPOINT = http://localhost:8000/synapse/paths
+HEADERS = -H 'Content-Type: application/json' -H 'x-api-key: $(API_KEY)' -H 'x-tenant-id: $(TENANT)'
+
+all: test-overrides test-baseline test-shaping summary
+
+.PHONY: test-overrides test-baseline test-shaping summary clean
+
+# 1️⃣ Per-request overrides — transient knobs
+test-overrides:
+	@echo "\n=== TEST 1: Per-request pathScoringOverrides ==="
+	@curl -s -X POST '$(ENDPOINT)?features=1' \
+		$(HEADERS) \
+		-d '{"intent":{"ask":"top_k","metric":{"op":"sum","target":"orders.total_amount"},"target":"product.category"},"topK":2,"pathScoringOverrides":{"idPrior":0.08,"fkBonus":0.03,"lengthPriorBase":0.92}}' \
+	| tee /tmp/paths_overrides.json | jq '{pathScoringUsed:.debug.pathScoringUsed, score:.paths[0].score, final:.debug.scoreComponentsByPath[0].final}'
+
+# 2️⃣ Baseline-only mode — clean baseline knobs (no checkpoint shaping)
+test-baseline:
+	@echo "\n=== TEST 2: Baseline-only experiment ==="
+	@curl -s -X POST '$(ENDPOINT)?features=1' \
+		$(HEADERS) -H 'x-experiment: baseline-only' \
+		-d '{"intent":{"ask":"top_k","metric":{"op":"sum","target":"orders.total_amount"},"target":"product.category"},"topK":2}' \
+	| tee /tmp/paths_baseline.json | jq '{pathScoringUsed:.debug.pathScoringUsed, score:.paths[0].score, final:.debug.scoreComponentsByPath[0].final}'
+
+# 3️⃣ Active shaping.json values — whatever the server loads per tenant
+test-shaping:
+	@echo "\n=== TEST 3: Tenant/global shaping.json knobs ==="
+	@curl -s -X POST '$(ENDPOINT)?features=1' \
+		$(HEADERS) \
+		-d '{"intent":{"ask":"top_k","metric":{"op":"sum","target":"orders.total_amount"},"target":"product.category"},"topK":2}' \
+	| tee /tmp/paths_shaping.json | jq '{pathScoringUsed:.debug.pathScoringUsed, score:.paths[0].score, final:.debug.scoreComponentsByPath[0].final}'
+
+# ✅ Quick parity audit with jq
+summary:
+	@echo "\n=== Parity check across all modes ==="
+	@for f in overrides baseline shaping; do \
+		echo "\nFile: $$f"; \
+		jq -r 'def abs(x): if x<0 then -x else x end; . as $$r | [ range(0; ($$r.paths|length)) | {i:., score:($$r.paths[.].score//0), final:($$r.debug.scoreComponentsByPath[.].final//0), diff:(($$r.paths[.].score//0)-($$r.debug.scoreComponentsByPath[.].final//0))}] as $$rows | {ok:($$rows|map((.diff|abs)<1e-6)|all),rows:$$rows}' /tmp/paths_$$f.json; \
+	done
+
+clean:
+	@rm -f /tmp/paths_*.json
+	@echo "Cleaned temporary JSONs."
+

@@ -1,13 +1,14 @@
-import math, json
+import math, json, logging
 from typing import List, Dict, Any, Optional
-from collections import defaultdict
+from collections import defaultdict, deque
 
 from .models import MatchResponse, ScoredField, ScoredEntity
 from .iem import IEMIndex
 
-# runtime knobs with safe defaults (fallback only)
+LOG = logging.getLogger(__name__)
+
 _CONFIG = {
-    "role_keywords": {},   # filled by set_role_config
+    "role_keywords": {},
     "shaping_weights": {"alias_alpha": 0.35, "shape_alpha": 0.12, "shape_beta": 0.10, "metric_alpha": 0.12},
     "entity_blend": {"entityWeight": 0.70, "fieldWeight": 0.30, "entityAliasAlpha": 0.15},
     "centroid_gamma": 0.60,
@@ -32,10 +33,20 @@ _CONFIG = {
         "fkBonus": 0.05,
         "lengthPriorBase": 0.92,
         "cosineWeight": 0.75,
+        # --- new, schema-aware knobs (safe defaults = no change) ---
+        "pkToFkBonus": 0.00,          # forward edge (src PK -> dst FK)
+        "fkToPkBonus": 0.00,          # reverse edge (FK -> PK)
+        "bridgePenalty": 0.00,        # penalize M2M-like "bridge" hops (high-degree intermediary)
+        "hubPenalty": 0.00,           # penalize passing through hubs
+        "hubDegreeThreshold": 8,      # degree >= threshold => considered a hub
+        "fanoutPenalty": 0.00,        # per-hop penalty scaled by dst degree (fanout)
     },
     "logging": {
         "decisionsEnabled": True,
         "path": "./logs/decisions.jsonl.gz",
+    },
+    "alignPlus": {
+        "osrZeroWhenNoText": True,
     },
 }
 
@@ -49,13 +60,22 @@ def set_shaping_weights(weights: dict[str, float] | None = None):
         _CONFIG["shaping_weights"].update({k: float(v) for k, v in weights.items()})
         print(f"DEBUG: set_shaping_weights called with {len(weights)} weights")
 
-def set_entity_blend(entity_weight: float, field_weight: float, entity_alias_alpha: float):
+def set_entity_blend(entity_weight: float = None, field_weight: float = None, entity_alias_alpha: float = None, **kwargs):
+    if entity_weight is None and "entityWeight" in kwargs:
+        entity_weight = float(kwargs["entityWeight"])
+    if field_weight is None and "fieldWeight" in kwargs:
+        field_weight = float(kwargs["fieldWeight"])
+    if entity_alias_alpha is None and "entityAliasAlpha" in kwargs:
+        entity_alias_alpha = float(kwargs["entityAliasAlpha"])
+
     _CONFIG["entity_blend"] = {
-        "entityWeight": float(entity_weight),
-        "fieldWeight": float(field_weight),
-        "entityAliasAlpha": float(entity_alias_alpha),
+        "entityWeight": float(entity_weight if entity_weight is not None else 0.70),
+        "fieldWeight": float(field_weight if field_weight is not None else 0.30),
+        "entityAliasAlpha": float(entity_alias_alpha if entity_alias_alpha is not None else 0.15),
     }
-    print(f"DEBUG: set_entity_blend called with entity_weight={entity_weight}, field_weight={field_weight}, entity_alias_alpha={entity_alias_alpha}")
+    print(f"DEBUG: set_entity_blend called with entity_weight={_CONFIG['entity_blend']['entityWeight']}, "
+          f"field_weight={_CONFIG['entity_blend']['fieldWeight']}, "
+          f"entity_alias_alpha={_CONFIG['entity_blend']['entityAliasAlpha']}")
 
 def set_centroid_gamma(gamma: float):
     _CONFIG["centroid_gamma"] = float(gamma)
@@ -79,8 +99,20 @@ def set_fill_config(d: dict | None):
 
 def set_path_scoring(d: dict | None):
     if not d: return
-    _CONFIG["pathScoring"].update({k: float(v) for k, v in d.items()
-                                   if k in ("idPrior","fkBonus","lengthPriorBase","cosineWeight")})
+    _CONFIG["pathScoring"] = {
+        "idPrior": float(d.get("idPrior", 0.10)),
+        "fkBonus": float(d.get("fkBonus", 0.05)),
+        "lengthPriorBase": float(d.get("lengthPriorBase", 0.92)),
+        "cosineWeight": float(d.get("cosineWeight", 0.75)),
+        "pkToFkBonus": float(d.get("pkToFkBonus", _CONFIG["pathScoring"].get("pkToFkBonus", 0.00))),
+        "fkToPkBonus": float(d.get("fkToPkBonus", _CONFIG["pathScoring"].get("fkToPkBonus", 0.00))),
+        "bridgePenalty": float(d.get("bridgePenalty", _CONFIG["pathScoring"].get("bridgePenalty", 0.00))),
+        "hubPenalty": float(d.get("hubPenalty", _CONFIG["pathScoring"].get("hubPenalty", 0.00))),
+        "hubDegreeThreshold": int(d.get("hubDegreeThreshold", _CONFIG["pathScoring"].get("hubDegreeThreshold", 8))),
+        "fanoutPenalty": float(d.get("fanoutPenalty", _CONFIG["pathScoring"].get("fanoutPenalty", 0.00))),
+    }
+    print(f"DEBUG: set_path_scoring -> {_CONFIG['pathScoring']}")
+    LOG.info(f"set_path_scoring applied: {_CONFIG['pathScoring']}")
 
 def set_logging_cfg(d: dict | None):
     if not d: return
@@ -88,17 +120,27 @@ def set_logging_cfg(d: dict | None):
     if "decisionsEnabled" in d: cur["decisionsEnabled"] = bool(d["decisionsEnabled"])
     if "path" in d and d["path"]: cur["path"] = str(d["path"])
 
-def set_path_scoring_config(d: dict | None):
-    """
-    Update PathScore™ knobs from shaping.json["pathScoring"].
-    Keys: idPrior, fkBonus, lengthPriorBase, cosineWeight
-    """
-    if not d: return
-    cur = _CONFIG["pathScoring"]
-    for k in ("idPrior", "fkBonus", "lengthPriorBase", "cosineWeight"):
-        if k in d and d[k] is not None:
-            cur[k] = float(d[k])
-    print(f"DEBUG: set_path_scoring_config -> {cur}")
+def set_alignplus_cfg(d: dict | None):
+    if not d: 
+        return
+    cur = _CONFIG.get("alignPlus", {})
+    if "osrZeroWhenNoText" in d and d["osrZeroWhenNoText"] is not None:
+        cur["osrZeroWhenNoText"] = bool(d["osrZeroWhenNoText"])
+    _CONFIG["alignPlus"] = cur
+    print(f"DEBUG: set_alignplus_cfg -> {_CONFIG['alignPlus']}")
+
+# def set_path_scoring_config(d: dict | None):
+#     """
+#     DEPRECATED: Use set_path_scoring() instead.
+#     Update PathScore™ knobs from shaping.json["pathScoring"].
+#     Keys: idPrior, fkBonus, lengthPriorBase, cosineWeight
+#     """
+#     if not d: return
+#     cur = _CONFIG["pathScoring"]
+#     for k in ("idPrior", "fkBonus", "lengthPriorBase", "cosineWeight"):
+#         if k in d and d[k] is not None:
+#             cur[k] = float(d[k])
+#     print(f"DEBUG: set_path_scoring_config -> {cur}")
 
 
 def _bag_from_intent(d: Dict[str, Any]) -> str:
@@ -135,16 +177,13 @@ def _role_prior_from_intent(d: Dict[str, Any]) -> Dict[str, float]:
 
 
 def _cosine(a: List[float], b: List[float]) -> float:
-    # both are already l2-normalized; dot product is cosine
     return sum(x * y for x, y in zip(a, b))
 
 
 def _role_prior_from_centroids(intent_vec: List[float], role_centroids: Dict[str, List[float]]) -> Dict[str, float]:
-    # cosine vs per-role centroid; both already (or treated as) L2
     scores = {}
     for role, cvec in role_centroids.items():
         scores[role] = _cosine(intent_vec, cvec)
-    # clamp negatives to 0 for a prob-like distribution
     scores = {k: max(0.0, v) for k, v in scores.items()}
     s = sum(scores.values()) or 1.0
     return {k: v/s for k, v in scores.items()}
@@ -185,7 +224,6 @@ def _guess_intent_role_tokens(intent_text: str) -> Dict[str, float]:
         for k in kws:
             if k in text:
                 scores[r] += 1.0
-    # normalize
     s = sum(scores.values()) or 1.0
     return {k: v / s for k, v in scores.items()}
 
@@ -197,7 +235,6 @@ def match_candidates(
     top_k_entities: int = 5,
     role_alpha: Optional[float] = None,
     intent_obj: Dict[str, Any] | None = None,
-    # + NEW: shaping parameters for A/B tuning
     alias_alpha: Optional[float] = None,
     shape_alpha: Optional[float] = None,
     shape_beta: Optional[float] = None,
@@ -216,7 +253,6 @@ def match_candidates(
     print(f"DEBUG: _CONFIG entity_blend={_CONFIG.get('entity_blend', {})}")
     print(f"DEBUG: _CONFIG centroid_gamma={_CONFIG.get('centroid_gamma', 'NOT_SET')}")
 
-    # --- 1) keyword prior (existing) ---
     if intent_obj:
         keyword_prior = _role_prior_from_intent(intent_obj)
         print(f"DEBUG: keyword_prior from intent_obj: {keyword_prior}")
@@ -225,16 +261,13 @@ def match_candidates(
         keyword_prior = _guess_intent_role_tokens(intent_signature)
         print(f"DEBUG: keyword_prior from signature: {keyword_prior}")
 
-    # --- 2) centroid prior (NEW, schema-adaptive) ---
     centroid_prior: Dict[str, float] = {}
     if getattr(iem, "role_centroids", None):
         print(f"DEBUG: role_centroids available: {list(iem.role_centroids.keys())}")
-        # cosine with each centroid; clamp negatives to 0 then normalize
         sims = {}
         a = intent_vec
         for r, cvec in iem.role_centroids.items():
             b = cvec
-            # both are l2-normalized → dot is cosine; be defensive anyway
             dot = sum(x*y for x, y in zip(a, b))
             sims[r] = max(0.0, float(dot))
         s = sum(sims.values()) or 1.0
@@ -243,12 +276,10 @@ def match_candidates(
     else:
         print("DEBUG: No role_centroids available in IEM")
 
-    # --- 3) blend both priors (NEW) ---
     gamma = _CONFIG["centroid_gamma"]
-    role_prior = _blend_priors(keyword_prior, centroid_prior, gamma=gamma)  # 60% schema-adaptive
+    role_prior = _blend_priors(keyword_prior, centroid_prior, gamma=gamma)
     print(f"DEBUG: role_prior blended with gamma={gamma}: {role_prior}")
 
-    # normalize target(s) to (entity, field) list
     def _parse_targets(t):
         if not t:
             return []
@@ -271,16 +302,13 @@ def match_candidates(
     for f in iem.fields:
         base = _cosine(intent_vec, f.vec)
 
-        # role bonus: use top role vs prior
         top_role = max(f.role.items(), key=lambda kv: kv[1])[0] if f.role else None
         role_bonus = role_prior.get(top_role or "", 0.0) * role_alpha
 
-        # --- ask-aware shaping & explicit target boost ---
         ask = (intent_obj or {}).get("ask")
         metric = (intent_obj or {}).get("metric", {})
         metric_op = (metric or {}).get("op")
 
-        # --- alias/target bonus (robust) ---
         norm = lambda s: (s or "").lower().strip()
         def variants(s: str) -> set[str]:
             s = norm(s)
@@ -291,23 +319,20 @@ def match_candidates(
             target_field_tokens |= variants(b)
 
         is_target_exact = (f.entity, f.name) in target_pairs
-        aliases = (f.aliases or []) + [f.name]   # include canonical as an alias
+        aliases = (f.aliases or []) + [f.name]
         has_alias_hit = any(
             (norm(al) in target_field_tokens) or (variants(al) & target_field_tokens)
             for al in aliases
         )
 
-        # weights (from configurable SHAPING_WEIGHTS or provided parameters)
         sw = _CONFIG["shaping_weights"]
         alias_alpha_val  = alias_alpha if alias_alpha is not None else sw["alias_alpha"]
         shape_alpha_val   = shape_alpha if shape_alpha is not None else sw["shape_alpha"]
         shape_beta_val    = shape_beta if shape_beta is not None else sw["shape_beta"]
         metric_alpha_val  = metric_alpha if metric_alpha is not None else sw["metric_alpha"]
 
-        # alias boost (explicit target mention)
         alias_bonus = alias_alpha_val if (is_target_exact or has_alias_hit) else 0.0
 
-        # ask-aware shaping
         role_shape = 0.0
         if ask == "top_k" and metric_op in {"count", "distinct_count"}:
             if top_role in {"geo", "category", "text"}:
@@ -315,30 +340,23 @@ def match_candidates(
             if top_role in {"money"}:
                 role_shape -= shape_beta_val
 
-        # metric-aware shaping
         if metric_op in {"sum", "avg", "mean", "median"} and top_role == "money":
             role_shape += metric_alpha_val
 
-        # final score (mix multiplicative base + additive nudges)
         score = base * (1.0 + role_bonus) + alias_bonus + role_shape
         scored_fields.append(ScoredField(entity=f.entity, name=f.name, score=score, roleTop=top_role))
 
-    # rank fields
     scored_fields.sort(key=lambda x: x.score, reverse=True)
     top_fields = scored_fields[:top_k_fields]
 
-    # define entity blend config once, always available
     eb = _CONFIG["entity_blend"]
 
-    # rank entities using stored entity embeddings if available
     top_entities: List[ScoredEntity] = []
     if getattr(iem, "entities", None):
-        # pre-collect top field scores per entity (use the same scored_fields you already have)
         per_ent_fields = defaultdict(list)
         for sf in scored_fields[: max(64, top_k_fields * 4)]:
             per_ent_fields[sf.entity].append(sf.score)
 
-        # small target bonus if entity is explicitly in targetPairs
         target_entities = {a for (a, _) in target_pairs}
         e_w, f_w, e_alias = eb["entityWeight"], eb["fieldWeight"], eb["entityAliasAlpha"]
 
@@ -352,7 +370,6 @@ def match_candidates(
         es.sort(key=lambda x: x.score, reverse=True)
         top_entities = es[:top_k_entities]
     else:
-        # fallback: avg of top field scores considered (existing behavior)
         per_ent = defaultdict(list)
         for sf in scored_fields[: max(64, top_k_fields * 4)]:
             per_ent[sf.entity].append(sf.score)
@@ -367,12 +384,12 @@ def match_candidates(
         topEntities=top_entities,
         debug={
             "rolePrior": role_prior,
-            "keywordPrior": keyword_prior,        # + NEW
-            "centroidPrior": centroid_prior,      # + NEW
+            "keywordPrior": keyword_prior,
+            "centroidPrior": centroid_prior,
             "blendWeights": {"keyword": round(1-gamma,2), "centroid": round(gamma,2)},
             "entityBlend": eb,
             "roleAlphaUsed": role_alpha,
-            "shapingWeights": {                   # + NEW: show actual weights used
+            "shapingWeights": {
                 "aliasAlpha": alias_alpha_val,
                 "shapeAlpha": shape_alpha_val,
                 "shapeBeta": shape_beta_val,
@@ -387,7 +404,6 @@ def match_candidates(
     )
 
 
-# ---------- Neuron-3 helpers: Slot Fill + AlignPlus + PathScore ----------
 
 def _parse_entity_field(s: Optional[str]) -> tuple[Optional[str], Optional[str]]:
     if not s: return None, None
@@ -403,13 +419,11 @@ def _entity_of_field_name(field_full: str) -> Optional[str]:
 
 
 def _coverage_score(intent: Dict[str, Any]) -> float:
-    # Coverage: ask + metric.op + target (+ timeWindow if present)
     slots = 0; hit = 0
     for key in ["ask", "metric", "target"]:
         slots += 1
         if key in intent and intent[key]:
             hit += 1
-    # optional bonus slot
     if "timeWindow" in intent: slots += 1; hit += 1
     return hit / max(1, slots)
 
@@ -425,8 +439,11 @@ def compute_alignplus(Abase: float, intent: Dict[str, Any],
                       shaping_cfg: dict = None) -> dict:
     cov = _coverage_score(intent)
 
-    # NEW: make OSR on "no text" configurable via shaping.json
-    align_cfg = (shaping_cfg or {}).get("alignPlus", {}) if shaping_cfg else {}
+    # merge: runtime _CONFIG["alignPlus"] is the source of truth; shaping_cfg (if provided)
+    # can still override for backward-compat.
+    align_cfg = dict(_CONFIG.get("alignPlus", {}))
+    if shaping_cfg:
+        align_cfg.update(shaping_cfg.get("alignPlus", {}))
     osr_zero_when_no_text = bool(align_cfg.get("osrZeroWhenNoText", True))
     if not tokens and osr_zero_when_no_text:
         osr = 0.0
@@ -444,20 +461,26 @@ def compute_alignplus(Abase: float, intent: Dict[str, Any],
 
 def _build_join_graph(iem: IEMIndex) -> dict[str, list[tuple[str,str,str,str]]]:
     """Return adjacency: entity -> list of (srcField, dstEntity, dstField, why)"""
-    from collections import deque
     adj: dict[str, list[tuple[str,str,str,str]]] = defaultdict(list)
     for j in (getattr(iem, "joins", []) or []):
+        # keep direction so we can differentiate pk→fk vs fk→pk later
         adj[j.srcEntity].append((j.srcField, j.dstEntity, j.dstField, "fk"))
-        # also add reverse (assume bidirectional traversal is possible)
         adj[j.dstEntity].append((j.dstField, j.srcEntity, j.srcField, "fk_rev"))
     return adj
+
+# --- tiny perf caches (safe, bounded) ---
+_BFS_CACHE: dict[tuple[int,str,str,int], list[list[tuple[str,str,str,str]]]] = {}
+_COS_CACHE: dict[tuple[int, str, str], float] = {}
 
 
 def _bfs_paths(adj: dict[str, list[tuple[str,str,str,str]]],
                start: str, goal: str, max_hops: int = 2) -> list[list[tuple[str,str,str,str]]]:
     """BFS over entities; edges carry (srcField, dstEntity, dstField, why)"""
-    from collections import deque
     if start == goal: return [[]]
+    # cache by (graph_id, start, goal, max_hops). graph_id≈|adj| to avoid keeping iem.
+    cache_key = (len(adj), start, goal, max_hops)
+    if cache_key in _BFS_CACHE:
+        return _BFS_CACHE[cache_key]
     paths = []
     queue = deque()
     queue.append((start, [], set([start])))
@@ -473,6 +496,7 @@ def _bfs_paths(adj: dict[str, list[tuple[str,str,str,str]]],
                 paths.append(new_path)
             else:
                 queue.append((dstE, new_path, seen | set([dstE])))
+    _BFS_CACHE[cache_key] = paths
     return paths
 
 
@@ -496,141 +520,6 @@ def _metric_entity_from_intent(intent: dict[str, Any]) -> str | None:
         return tgt.split(".")[0]
     return None
 
-# def _canonical_slot_name(role_top: str, field_name: str) -> str:
-#     """Map role+name to generic slot id (e.g., any '...city' under geo → 'city')."""
-#     fname = field_name.lower()
-#     if role_top == "geo":
-#         if fname.endswith("city"):
-#             return "city"
-#         if fname.endswith("state"):
-#             return "state"
-#         if fname.endswith("country"):
-#             return "country"
-#         return "geo"
-#     if role_top == "timestamp":
-#         if "date" in fname: return "date"
-#         return "timestamp"
-#     if role_top == "id": return "id"
-#     if role_top == "money": return "money"
-#     return role_top or "unknown"
-
-# def _iem_field_lookup(iem: IEMIndex) -> dict[tuple[str,str], Any]:
-#     return {(f.entity, f.name): f for f in iem.fields}
-
-# def _join_distance(iem: IEMIndex, start_entity: str, target_entity: str, max_hops: int = 3) -> int:
-#     """BFS over entity graph; returns hop count or large number if unreachable."""
-#     adj = _build_join_graph(iem)
-#     if start_entity == target_entity: return 0
-#     from collections import deque
-#     q = deque([(start_entity, 0)])
-#     seen = {start_entity}
-#     while q:
-#         e, d = q.popleft()
-#         if d >= max_hops: 
-#             continue
-#         for (_, nxt, _, _) in adj.get(e, []):
-#             if nxt in seen: 
-#                 continue
-#             if nxt == target_entity: 
-#                 return d + 1
-#             seen.add(nxt)
-#             q.append((nxt, d + 1))
-#     return 1_000_000  # unreachable sentinel
-
-# def _name_similarity(a: str, b: str) -> float:
-#     """Lightweight name sim for tie-breaks; 1 if exact, else soft by token overlap."""
-#     import re
-#     a, b = (a or "").lower(), (b or "").lower()
-#     if a == b: return 1.0
-#     at = set(re.findall(r"[a-z0-9]+", a))
-#     bt = set(re.findall(r"[a-z0-9]+", b))
-#     if not at or not bt: return 0.0
-#     return len(at & bt) / len(at | bt)
-
-# def _resolve_conflicts(
-#     iem: IEMIndex,
-#     pivot_entity: str,
-#     candidates: list[ScoredField],
-#     intent_obj: dict,
-#     prefer_target_entity: bool = True,
-# ) -> list:
-#     """
-#     Group same-slot competitors across entities (e.g., orders.shipping_city vs customer.city),
-#     rank by: (1) prefer target-entity, (2) closest join distance to pivot, (3) role weight,
-#     (4) base score, (5) name similarity to pivot.
-#     """
-#     from .models import ConflictNote
-#     # group by slot id
-#     by_slot: dict[str, list[ScoredField]] = {}
-#     for sf in candidates:
-#         slot = _canonical_slot_name(sf.roleTop, sf.name)
-#         if slot not in by_slot: by_slot[slot] = []
-#         by_slot[slot].append(sf)
-
-#     target_ent = None
-#     tgt = (intent_obj or {}).get("target")
-#     if isinstance(tgt, str) and "." in tgt:
-#         target_ent = tgt.split(".")[0]
-
-#     notes: list = []
-#     fidx = _iem_field_lookup(iem)
-
-#     for slot, sfs in by_slot.items():
-#         # only "conflict" if same-slot appears across >1 distinct entity
-#         ents = {sf.entity for sf in sfs}
-#         if len(ents) <= 1:
-#             continue
-
-#         scored: list[tuple[float, ScoredField]] = []
-#         for sf in sfs:
-#             pref = 0.0
-#             why_bits = []
-#             # (1) prefer explicit target entity
-#             if prefer_target_entity and target_ent and sf.entity == target_ent:
-#                 pref += 0.12
-#                 why_bits.append("preferTargetEntity")
-#             # (2) closer to pivot entity
-#             if pivot_entity:
-#                 hops = _join_distance(iem, pivot_entity, sf.entity, max_hops=4)
-#                 hop_bonus = max(0.0, (3.0 - min(hops, 3)) * 0.05)  # 0.15 → 0.10 → 0.05 → 0
-#                 pref += hop_bonus
-#                 if hop_bonus > 0: why_bits.append("closestJoin")
-#             # (3) role weight (stored in IEM role map)
-#             fmeta = fidx.get((sf.entity, sf.name))
-#             role_w = 0.0
-#             if fmeta and fmeta.role:
-#                 role_w = max(fmeta.role.values())
-#                 pref += 0.05 * role_w
-#                 if role_w > 0: why_bits.append("roleWeight")
-#             # (4) base score as is
-#             base = float(sf.score)
-#             # (5) name similarity to pivot field (if pivot has a field name)
-#             piv_field_name = None
-#             if isinstance(tgt, str) and "." in tgt:
-#                 piv_field_name = tgt.split(".")[1]
-#             if piv_field_name:
-#                 pref += 0.03 * _name_similarity(sf.name, piv_field_name)
-
-#             final = base + pref
-#             scored.append((final, sf))
-
-#         scored.sort(key=lambda x: x[0], reverse=True)
-#         winner = scored[0][1]
-#         why_str = "|".join(sorted(set(
-#             ["preferTargetEntity"] if (prefer_target_entity and target_ent and winner.entity == target_ent) else []
-#         )) or ["composite"])
-        
-#         note = ConflictNote(
-#             slot=slot,
-#             candidates=[f"{sf.entity}.{sf.name}" for _, sf in scored],
-#             resolution=f"{winner.entity}.{winner.name}",
-#             why=why_str,
-#             scores={f"{sf.entity}.{sf.name}": round(score, 6) for score, sf in scored}
-#         )
-#         notes.append(note)
-
-#     return notes
-
 def score_target_context(iem, intent_vec, target_full: str, intent_obj: dict | None = None) -> dict:
     """
     Join-aware scoring for a candidate target relative to the current intent:
@@ -644,24 +533,19 @@ def score_target_context(iem, intent_vec, target_full: str, intent_obj: dict | N
     except Exception:
         return {"CosineContext": 0.0, "RoleCoherence": 0.0, "PathScore": 0.0}
 
-    # field lookup
     fmap = {(f.entity, f.name): f for f in iem.fields}
     f = fmap.get((entity, field))
     if not f:
         return {"CosineContext": 0.0, "RoleCoherence": 0.0, "PathScore": 0.0}
 
-    # cosine + role
     cos = max(0.0, sum(x*y for x, y in zip(intent_vec, f.vec)))
     role_top = max(f.role.items(), key=lambda kv: kv[1])[0] if f.role else "unknown"
     role_prob = float((f.role or {}).get(role_top, 0.0))
 
-    # --- join-aware PathScore ---
-    # pick a pivot entity from intent (money entity for sum/avg; else explicit target entity)
     pivot_entity = None
     if intent_obj:
         metric_op = ((intent_obj.get("metric") or {}).get("op") or "").lower()
         if metric_op in {"sum", "avg", "mean", "median"}:
-            # pick highest "money" field's entity as pivot
             best_e, best_s = None, -1.0
             for ff in iem.fields:
                 if "money" in (ff.role or {}):
@@ -675,34 +559,29 @@ def score_target_context(iem, intent_vec, target_full: str, intent_obj: dict | N
                 pivot_entity = t.split(".", 1)[0]
 
     if not pivot_entity:
-        # fall back to candidate's entity (no cross-entity path needed)
         pivot_entity = entity
 
     if pivot_entity == entity:
-        # local: give small idPrior bonus if *_id field, else neutral
         id_prior = _CONFIG["pathScoring"]["idPrior"]
         prior = id_prior if field.endswith("_id") else 0.0
         return {"CosineContext": float(cos), "RoleCoherence": role_prob, "PathScore": float(prior)}
 
-    # graph path from pivot -> entity
     adj = _build_join_graph(iem)
     raw_paths = _bfs_paths(adj, start=pivot_entity, goal=entity, max_hops=3)
 
     if not raw_paths:
         return {"CosineContext": float(cos), "RoleCoherence": role_prob, "PathScore": 0.0}
 
-    # turn edges into a lightweight prior (same knobs as /paths)
     ps_cfg = _CONFIG["pathScoring"]
     id_prior = float(ps_cfg["idPrior"])
     fk_bonus = float(ps_cfg["fkBonus"])
-    length_decay = float(ps_cfg["lengthPriorBase"])  # <1 → slight preference to shorter paths
+    length_decay = float(ps_cfg["lengthPriorBase"])
     cos_w = float(ps_cfg["cosineWeight"])
 
     best = 0.0
     name_map = {(ff.entity, ff.name): ff for ff in iem.fields}
 
     for edges in raw_paths:
-        # edges are (srcE, srcF, dstE, dstF, why)
         hop_priors = []
         hop_cos = []
         for (srcE, srcF, dstE, dstF, why) in edges:
@@ -723,7 +602,6 @@ def score_target_context(iem, intent_vec, target_full: str, intent_obj: dict | N
             hop_priors.append(prior)
             hop_cos.append(cval)
 
-        # combine per-hop and apply length prior
         path_prior = sum(hop_priors) / max(1, len(hop_priors))
         path_cos = sum(hop_cos) / max(1, len(hop_cos))
         combined = (cos_w * path_cos) + ((1.0 - cos_w) * path_prior)
@@ -744,7 +622,6 @@ def resolve_conflicts(
     Returns (conflicts[], maybe_new_target_str).
     Each conflict note: {slot, candidates:[...], resolution, why:{...}}
     """
-    # config
     cf = _CONFIG["fill"]["conflict"]
     w_path = float(cf.get("pathWeight", 0.5))
     w_cos  = float(cf.get("cosineWeight", 0.35))
@@ -753,22 +630,18 @@ def resolve_conflicts(
     len_base = float(cf.get("lengthPriorBase", 0.92))
     metric_bonus = float(cf.get("preferMetricEntityBonus", 0.03))
 
-    # precompute maps/graph
     name_map = _field_map(iem)
     adj = _build_join_graph(iem)
 
-    # metric context
     metric_entity = _metric_entity_from_intent(intent_obj) or (match_debug.get("topEntities", [{}])[0:1] or [None])[0]
     if isinstance(metric_entity, dict):
         metric_entity = metric_entity.get("entity")
-    # pick a metric field vector (best 'money' if available)
     money_field = None
     for sf in raw_fields:
         if getattr(sf, "roleTop", None) == "money":
             money_field = name_map.get((sf.entity, sf.name))
             break
 
-    # group ambiguous slots by role (we target roles that commonly conflict)
     roles_to_check = {"geo", "timestamp", "category"}
     by_role: dict[str, dict[str, Any]] = {r: {} for r in roles_to_check}
 
@@ -784,19 +657,16 @@ def resolve_conflicts(
     new_target = None
 
     for role, ent_map in by_role.items():
-        # consider conflicts only if same-role candidates span >=2 entities
         if len(ent_map) < 2:
             continue
 
-        # compute scores per candidate
         scored = []
         for ent, sf in ent_map.items():
             candF = name_map.get((sf.entity, sf.name))
-            # PathScore: best path from metric_entity -> candidate.entity
             path_score = 0.0
             if metric_entity:
                 if metric_entity == sf.entity:
-                    path_score = min(1.0, 0.15)  # treat co-located as light path confidence
+                    path_score = min(1.0, 0.15)
                 else:
                     raw_paths = _bfs_paths(adj, start=metric_entity, goal=sf.entity, max_hops=3)
                     if raw_paths:
@@ -805,18 +675,14 @@ def resolve_conflicts(
                         length_prior = (len_base ** max(0, hops - 1))
                         path_score = max(0.0, base_ps * length_prior)
 
-            # CosineContext
             cos1 = _cos(intent_vec, getattr(candF, "vec", []))
             cos2 = _cos(getattr(candF, "vec", []), getattr(money_field, "vec", [])) if money_field else 0.0
             cos_ctx = (cos1 + cos2) / (2.0 if money_field else 1.0)
 
-            # RoleCoherence
             role_coh = _role_prob(candF, role)
 
-            # Small bump if candidate entity == metric entity
             local_bonus = metric_bonus if metric_entity and sf.entity == metric_entity else 0.0
 
-            # Combine
             score = (w_path * max(min_path, path_score)) + (w_cos * cos_ctx) + (w_role * role_coh) + local_bonus
             scored.append({
                 "key": f"{sf.entity}.{sf.name}",
@@ -857,18 +723,29 @@ def _path_score(iem: IEMIndex, intent_vec: list[float],
       - lengthPrior: (lengthPriorBase)^(hops-1)   (edges == hops)
     """
     ps = _CONFIG.get("pathScoring", {})
-    if cfg:  # allow direct override injection
+    if cfg:
         ps = {**ps, **cfg}
 
     id_prior = float(ps.get("idPrior", 0.10))
     fk_bonus = float(ps.get("fkBonus", 0.05))
     len_base = float(ps.get("lengthPriorBase", 0.92))
-    w_cos   = float(ps.get("cosineWeight", 0.75))
+    w_cos    = float(ps.get("cosineWeight", 0.75))
+    # new, schema-aware pieces
+    pk_fk_bonus = float(ps.get("pkToFkBonus", 0.00))
+    fk_pk_bonus = float(ps.get("fkToPkBonus", 0.00))
+    bridge_pen  = float(ps.get("bridgePenalty", 0.00))
+    hub_pen     = float(ps.get("hubPenalty", 0.00))
+    hub_thresh  = int(ps.get("hubDegreeThreshold", 8))
+    fanout_pen  = float(ps.get("fanoutPenalty", 0.00))
 
     if not edges:
-        return 1.0  # trivial path
+        return 1.0
 
     name_map = {(f.entity, f.name): f for f in iem.fields}
+    # degree map for hub/fanout heuristics
+    deg: dict[str,int] = defaultdict(int)
+    for (e, lst) in _build_join_graph(iem).items():
+        deg[e] = len(lst)
 
     cos_terms = []
     prior_terms = []
@@ -878,11 +755,17 @@ def _path_score(iem: IEMIndex, intent_vec: list[float],
         b = name_map.get((dstE, dstF))
 
         if a and b:
-            ca = max(0.0, _cosine(intent_vec, a.vec))
-            cb = max(0.0, _cosine(intent_vec, b.vec))
+            # cache per (intent_id≈len, entity, field)
+            k1 = (len(intent_vec), srcE, srcF)
+            k2 = (len(intent_vec), dstE, dstF)
+            if k1 not in _COS_CACHE:
+                _COS_CACHE[k1] = max(0.0, _cosine(intent_vec, a.vec))
+            if k2 not in _COS_CACHE:
+                _COS_CACHE[k2] = max(0.0, _cosine(intent_vec, b.vec))
+            ca = _COS_CACHE[k1]
+            cb = _COS_CACHE[k2]
             cos_terms.append((ca + cb) / 2.0)
         else:
-            # unknown field(s) → conservative cosine
             cos_terms.append(0.0)
 
         p = 0.0
@@ -890,6 +773,16 @@ def _path_score(iem: IEMIndex, intent_vec: list[float],
             p += id_prior
         if why in {"fk", "fk_rev"}:
             p += fk_bonus
+            # direction-aware nudges
+            if why == "fk":      # forward PK->FK
+                p += pk_fk_bonus
+            elif why == "fk_rev":  # reverse FK->PK
+                p += fk_pk_bonus
+        # fanout / hub penalties
+        if deg.get(dstE,0) >= hub_thresh:
+            p -= hub_pen
+        if fanout_pen:
+            p -= fanout_pen * max(0, deg.get(dstE,0) - 1)
         prior_terms.append(p)
 
     avg_cos = sum(cos_terms) / len(cos_terms) if cos_terms else 0.0
@@ -900,4 +793,10 @@ def _path_score(iem: IEMIndex, intent_vec: list[float],
     hops = len(edges)
     length_prior = (len_base ** max(0, hops - 1))
 
-    return float(raw * length_prior)
+    score = float(raw * length_prior)
+    # simple "bridge" penalty if the middle of a 3-hop path is very high-degree
+    if bridge_pen and hops >= 3:
+        mid = edges[hops//2][2]  # dstEntity of middle hop
+        if deg.get(mid,0) >= hub_thresh:
+            score -= bridge_pen
+    return score

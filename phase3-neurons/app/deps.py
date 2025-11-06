@@ -1,4 +1,3 @@
-# phase3-neurons/app/deps.py
 from __future__ import annotations
 import os, json, hashlib
 from dataclasses import dataclass
@@ -16,7 +15,6 @@ os.makedirs(GOLDEN_DIR, exist_ok=True)
 os.makedirs(CKPT_DIR, exist_ok=True)
 os.makedirs(RUNTIME_DIR, exist_ok=True)
 
-# --- clamps / ranges ---
 CLAMPS = {
     'alias_alpha': (0.25, 0.60),
     'shape_alpha': (0.10, 0.60),

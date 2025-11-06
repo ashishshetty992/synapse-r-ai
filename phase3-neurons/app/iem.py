@@ -8,7 +8,6 @@ import re
 
 
 
-# -------- utilities --------
 def char_ngrams(s: str, n_min=2, n_max=5) -> Iterable[str]:
     s = f"##{s.lower()}##"
     for n in range(n_min, n_max + 1):
@@ -49,7 +48,6 @@ def dense_from_sparse(sparse: Dict[str, float], vocab: List[str]) -> List[float]
     return [sparse.get(tok, 0.0) for tok in vocab]
 
 
-# -------- IEMIndex --------
 class IEMIndex:
     def __init__(self, dim: int, vocab: List[str], fields: List[IEMFieldEmbedding],
                  role_centroids: Optional[Dict[str, List[float]]] = None,
@@ -60,7 +58,7 @@ class IEMIndex:
         self.fields = fields
         self.role_centroids = role_centroids or {}
         self.entities = entity_vecs or []
-        self.joins = joins or []  # <-- NEW
+        self.joins = joins or []
 
     def to_json(self) -> IEMDoc:
         return IEMDoc(
@@ -69,7 +67,7 @@ class IEMIndex:
             fields=self.fields,
             roleCentroids=self.role_centroids or None,
             entities=(self.entities if self.entities else None),
-            joins=(self.joins if self.joins else None),  # <-- NEW
+            joins=(self.joins if self.joins else None),
         )
 
     @staticmethod
@@ -87,7 +85,7 @@ class IEMIndex:
             fields=doc.fields,
             role_centroids=(doc.roleCentroids or {}),
             entity_vecs=(doc.entities or []),
-            joins=(doc.joins or []),  # <-- NEW
+            joins=(doc.joins or []),
         )
 
 
@@ -115,7 +113,6 @@ def _sparse_from_name(name: str) -> Dict[str, float]:
     return l2_normalize(v)
 
 
-# + NEW: compute mean (l2-normalized) vector per role based on top-role assignment
 def _compute_role_centroids(fields: List[IEMFieldEmbedding], roles: List[str]) -> Dict[str, List[float]]:
     centroids: Dict[str, List[float]] = {}
     for r in roles:
@@ -123,7 +120,6 @@ def _compute_role_centroids(fields: List[IEMFieldEmbedding], roles: List[str]) -
         for f in fields:
             if not f.role:
                 continue
-            # use top role only to avoid dilution
             top_r = max(f.role.items(), key=lambda kv: kv[1])[0]
             if top_r == r:
                 vecs.append(np.array(f.vec, dtype=float))
@@ -134,14 +130,12 @@ def _compute_role_centroids(fields: List[IEMFieldEmbedding], roles: List[str]) -
     return centroids
 
 
-# --- helper to compute entity vectors ---
 def _compute_entity_vectors(fields: List[IEMFieldEmbedding]) -> List[IEMEntityEmbedding]:
     """
     Simple, robust default:
       - mean of an entity's field vectors (L2-normalized per field),
       - optional light weighting by role (ids/timestamps slightly downweighted).
     """
-    # role weights are conservative; tweak if needed
     role_weight = {
         "id": 0.8,
         "timestamp": 0.85,
@@ -157,7 +151,6 @@ def _compute_entity_vectors(fields: List[IEMFieldEmbedding]) -> List[IEMEntityEm
     for f in fields:
         v = np.array(f.vec, dtype=float)
         v = v / (np.linalg.norm(v) or 1.0)
-        # pick top role for weighting
         top_role = max(f.role.items(), key=lambda kv: kv[1])[0] if f.role else "unknown"
         w = float(role_weight.get(top_role, 1.0))
         by_ent[f.entity].append(w * v)
@@ -195,25 +188,20 @@ def build_iem_from_uem(uem: UEM, dim: int = 256) -> IEMIndex:
         rp = role_probs(fname)
         sparse = _sparse_from_name(fname)
         dense = dense_from_sparse(sparse, vocab)
-        # final l2
         n = math.sqrt(sum(x * x for x in dense)) or 1.0
         dense = [x / n for x in dense]
 
-        # RoleBoost™ — compute and persist per-field
         rb = compute_role_boost_inline(dense, rp, lambda_r=0.25)
 
         fields.append(IEMFieldEmbedding(
             entity=ent, name=fname, aliases=aliases, role=rp, vec=dense, roleBoost=rb
         ))
 
-    # + NEW: compute schema-adaptive role centroids (based on top-role grouping)
     roles = ["id", "timestamp", "money", "geo", "category", "text", "quantity"]
-    role_centroids = _compute_role_centroids(fields, roles)  # + NEW
+    role_centroids = _compute_role_centroids(fields, roles)
 
-    # NEW: entity vectors
     entity_vecs = _compute_entity_vectors(fields)
 
-    # NEW: extract join edges from UEM refs
     joins = _extract_joins_from_uem(uem)
 
     return IEMIndex(
@@ -222,10 +210,9 @@ def build_iem_from_uem(uem: UEM, dim: int = 256) -> IEMIndex:
         fields=fields,
         role_centroids=role_centroids,
         entity_vecs=entity_vecs,
-        joins=joins,  # <-- NEW
+        joins=joins,
     )
 
-# -------- Formula Lab: RoleBoost™, AliasStability™, ClusterQuality --------
 
 def compute_role_boost_inline(vec: List[float], role: Dict[str, float], lambda_r: float = 0.25) -> float:
     """
@@ -236,7 +223,6 @@ def compute_role_boost_inline(vec: List[float], role: Dict[str, float], lambda_r
     role_vals = np.array(list(role.values()), dtype=float)
     if role_vals.size == 0:
         return 0.0
-    # tile role vector to match base length
     role_proj = np.resize(role_vals / (np.linalg.norm(role_vals) or 1.0), base.shape)
     boosted = base + lambda_r * role_proj
     boosted = boosted / (np.linalg.norm(boosted) or 1.0)

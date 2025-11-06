@@ -1,4 +1,3 @@
-# phase3-neurons/app/utils_jsonl.py
 from __future__ import annotations
 import json, os
 from typing import Iterable
@@ -6,7 +5,6 @@ from typing import Iterable
 
 def append_jsonl(path: str, obj: dict):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    # best-effort atomic append on POSIX: write temp then append
     tmp = f"{path}.tmp"
     line = json.dumps(obj, ensure_ascii=False) + "\n"
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:

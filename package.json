@@ -21,8 +21,9 @@
     "regen:aiql": "npm run generate:aiql && npm run validate:aiql",
     "feedback:demo": "make feedback-demo",
     "eval:last": "make eval",
-    "train": "make trainer-run",
-    "trainer:activate": "node -e \"console.log('Use: make trainer-activate CKPT=...')\""
+    "train": "curl -s -X POST http://localhost:8088/trainer/run -H 'content-type: application/json' -d '{\"maxGrid\":64}'",
+    "train:tenant": "node -e \"const t=process.argv[1]; if(!t){console.error('tenant required'); process.exit(1)}; require('child_process').execSync('curl -s -X POST http://localhost:8088/trainer/run -H \\\"content-type: application/json\\\" -d \\\"{\\\\\\\"tenant\\\\\\\":\\\\\\\"'+t+'\\\\\\\",\\\\\\\"maxGrid\\\\\\\":64}\\\"', {stdio:'inherit'})\"",
+    "trainer:activate": "node -e \"const c=process.argv[1]; if(!c){console.error('CKPT required'); process.exit(1)}; require('child_process').execSync('curl -s -X POST http://localhost:8088/trainer/activate -H \\\"content-type: application/json\\\" -d \\\"{\\\\\\\"checkpoint\\\\\\\":\\\\\\\"'+c+'\\\\\\\"}\\\"', {stdio:'inherit'})\""
   },
   "workspaces": [
     "packages/*",

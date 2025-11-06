@@ -1,12 +1,23 @@
-# phase3-neurons/app/trainer.py
 from __future__ import annotations
-from fastapi import APIRouter, HTTPException, Request
-import os, time, json, glob
+from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi.responses import JSONResponse
+import os, time, json, glob, copy, uuid
 from datetime import datetime
+from typing import Optional
 from .models import TrainerRunIn, TrainerRunOut, ActivateIn, VersionsOut
 from .deps import CKPT_DIR, ACTIVE_PTR, write_json, clamp
+from .config import load_shaping_cfg, CFG_ROOT, GLOBAL_DIR
+from .eval import compute_metrics_for_tenant
+from .active_cfg import active_shaping_path
+from . import main as _main
 
 router = APIRouter(prefix="/trainer", tags=["trainer"])
+
+def _rid(request: Optional[Request]) -> str:
+    try:
+        return getattr(request.state, "request_id")
+    except Exception:
+        return str(uuid.uuid4())
 
 _DEFAULT_SHAPING = {
     "weights": {
@@ -42,27 +53,65 @@ _DEFAULT_FEWSHOT = {
 @router.post('/run', response_model=TrainerRunOut)
 async def trainer_run(inp: TrainerRunIn, request: Request = None):
     rid = getattr(request.state, "request_id", "-")
-    # (stub) pretend we searched; return default but clamp
-    s = _DEFAULT_SHAPING.copy()
-    w = s["weights"]
-    for k,v in list(w.items()):
+    tenant = (inp.tenant or getattr(request.state, "tenant_id", None) or "_global_").strip()
+    
+    def _merge(a, b):
+        out = copy.deepcopy(a)
+        for k, v in (b or {}).items():
+            if isinstance(v, dict) and isinstance(out.get(k), dict):
+                out[k] = _merge(out[k], v)
+            else:
+                out[k] = v
+        return out
+    
+    s = copy.deepcopy(_DEFAULT_SHAPING)
+    try:
+        tenant_shaping = None
+        if tenant:
+            tpath = os.path.join(CFG_ROOT, tenant, "shaping.json")
+            if os.path.exists(tpath):
+                with open(tpath) as f:
+                    tenant_shaping = json.load(f)
+        if not tenant_shaping:
+            gpath = os.path.join(GLOBAL_DIR, "shaping.json")
+            if os.path.exists(gpath):
+                with open(gpath) as f:
+                    tenant_shaping = json.load(f)
+        if tenant_shaping:
+            s = _merge(s, tenant_shaping)
+    except Exception:
+        pass
+    
+    w = s.get("weights", {})
+    for k, v in list(w.items()):
         w[k] = float(clamp(k, v))
-    ps = s["pathScoring"]
-    for k,v in list(ps.items()):
+    ps = s.get("pathScoring", {})
+    for k, v in list(ps.items()):
         ps[k] = float(clamp(f"pathScoring.{k}", v))
 
     ckpt_name = f"trainer_{datetime.now().strftime('%Y%m%d_%H%M')}"
-    out_dir = os.path.join(CKPT_DIR, ckpt_name)
+    out_dir = os.path.join(CKPT_DIR, tenant, ckpt_name)
     os.makedirs(out_dir, exist_ok=True)
 
     write_json(os.path.join(out_dir, 'shaping.json'), s)
     write_json(os.path.join(out_dir, 'fewshot.json'), _DEFAULT_FEWSHOT)
-    metrics = {  # placeholder, to be replaced by real evaluator numbers
-        "top1_acc": 0.0, "mrr": 0.0, "slot_f1": 0.0,
-        "aplus_mean": 0.0, "pathscore_mean": 0.0
-    }
+    try:
+        metrics = compute_metrics_for_tenant(tenant=tenant, shaping=s, fewshot=_DEFAULT_FEWSHOT)
+    except Exception as _e:
+        metrics = {"top1_acc": 0.0, "mrr": 0.0, "slot_f1": 0.0, "aplus_mean": 0.0, "pathscore_mean": 0.0, "n_golden": 0, "n_feedback": 0, "error": str(_e)}
     write_json(os.path.join(out_dir, 'metrics.json'), metrics)
-    return TrainerRunOut(ok=True, ckpt=ckpt_name, metrics=metrics, requestId=rid)
+    
+    try:
+        if getattr(_main, "PROM_REG", None):
+            tenant_lbl = tenant
+            _main.MET_TRAIN_RUNS.inc()
+            _main.MET_TOP1.labels(tenant=tenant_lbl).set(float(metrics.get("top1_acc", 0.0)))
+            _main.MET_MRR.labels(tenant=tenant_lbl).set(float(metrics.get("mrr", 0.0)))
+            _main.MET_GOLDEN.labels(tenant=tenant_lbl).set(float(metrics.get("n_golden", 0)))
+    except Exception:
+        pass
+    
+    return TrainerRunOut(ok=True, ckpt=os.path.join(tenant, ckpt_name), metrics=metrics, requestId=rid)
 
 @router.post('/activate')
 async def trainer_activate(inp: ActivateIn, request: Request = None):
@@ -99,7 +148,6 @@ async def trainer_versions(request: Request = None):
             p = os.path.join(d, f)
             if os.path.exists(p):
                 rec["files"].append(f)
-        # optional metrics
         m = os.path.join(d, "metrics.json")
         if os.path.exists(m):
             try:
@@ -109,29 +157,51 @@ async def trainer_versions(request: Request = None):
         items.append(rec)
     return {"versions": items, "requestId": rid}
 
-@router.get('/last_eval')
-async def trainer_last_eval(request: Request = None):
-    rid = getattr(request.state, "request_id", "-")
-    from .deps import read_json
-    # read ACTIVE_PTR's metrics if present; otherwise empty
+@router.get("/last_eval")
+def trainer_last_eval(request: Request, tenant: Optional[str] = Query(None)):
+    """
+    Returns metrics for the active checkpoint.
+    Looks up runtime/active.json → directory → metrics.json.
+    """
+    rid = _rid(request)
     try:
-        active = read_json(ACTIVE_PTR)
-    except:
-        return {"top1_acc": 0.0, "mrr": 0.0, "slot_f1": 0.0, "aplus_mean": 0.0, "pathscore_mean": 0.0, "n_golden": 0, "n_feedback": 0, "ckpt": None, "requestId": rid}
-    
-    m = os.path.join(os.path.dirname(active["shaping"]), "metrics.json")
-    if os.path.exists(m):
-        metrics = read_json(m)
+        # Resolve active shaping path (points into checkpoints/<tenant>/<ckpt>/shaping.json)
+        shaping_path = active_shaping_path()
+        
+        if not shaping_path or not os.path.exists(shaping_path):
+            return JSONResponse(
+                {"ok": False, "error": "no active checkpoint or shaping.json missing", "requestId": rid},
+                status_code=404
+            )
+        
+        ckpt_dir = os.path.dirname(shaping_path)
+        metrics_path = os.path.join(ckpt_dir, "metrics.json")
+        
+        # Derive checkpoint name from ckpt_dir tail (e.g., 'acme/trainer_YYYYMMDD_HHMM' or 'trainer_...')
+        # The tail is usually ".../checkpoints/<tenant>/<ckpt>", so get the last two
+        parts = ckpt_dir.replace("\\", "/").split("/")
+        checkpoint = "/".join(parts[-2:]) if len(parts) >= 2 else os.path.basename(ckpt_dir)
+        
+        if not os.path.exists(metrics_path):
+            # Not fatal—return empty metrics but 200 so tooling can proceed
+            return {
+                "ok": True,
+                "checkpoint": checkpoint,
+                "metrics": {},
+                "requestId": rid
+            }
+        
+        with open(metrics_path, "r") as f:
+            metrics = json.load(f)
+        
         return {
-            "top1_acc": metrics.get("top1_acc", 0.0),
-            "mrr": metrics.get("mrr", 0.0),
-            "slot_f1": metrics.get("slot_f1", 0.0),
-            "aplus_mean": metrics.get("aplus_mean", 0.0),
-            "pathscore_mean": metrics.get("pathscore_mean", 0.0),
-            "n_golden": metrics.get("n_golden", 0),
-            "n_feedback": metrics.get("n_feedback", 0),
-            "ckpt": active.get("checkpoint"),
+            "ok": True,
+            "checkpoint": checkpoint,
+            "metrics": metrics,
             "requestId": rid
         }
-    
-    return {"top1_acc": 0.0, "mrr": 0.0, "slot_f1": 0.0, "aplus_mean": 0.0, "pathscore_mean": 0.0, "n_golden": 0, "n_feedback": 0, "ckpt": active.get("checkpoint"), "requestId": rid}
+    except Exception as e:
+        return JSONResponse(
+            {"ok": False, "error": f"last_eval error: {str(e)}", "requestId": rid},
+            status_code=500
+        )

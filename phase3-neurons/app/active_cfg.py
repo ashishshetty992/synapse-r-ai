@@ -1,4 +1,3 @@
-# phase3-neurons/app/active_cfg.py
 import os, json
 
 ROOT = os.path.dirname(os.path.dirname(__file__))

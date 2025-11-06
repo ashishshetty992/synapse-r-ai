@@ -1,0 +1,34 @@
+[
+  {
+    "intent": {
+      "ask": "top_k",
+      "metric": {
+        "op": "sum",
+        "target": "orders.total_amount"
+      },
+      "target": "customer.city"
+    },
+    "expected": {
+      "target": "customer.city"
+    },
+    "notes": "Top city by revenue",
+    "tenant": "acme",
+    "ts": 1762422913067
+  },
+  {
+    "intent": {
+      "ask": "top_k",
+      "metric": {
+        "op": "sum",
+        "target": "orders.total_amount"
+      },
+      "target": "customer.city"
+    },
+    "expected": {
+      "target": "customer.city"
+    },
+    "notes": "Top city by revenue",
+    "tenant": "acme",
+    "ts": 1762422921430
+  }
+]

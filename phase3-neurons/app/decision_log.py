@@ -13,7 +13,6 @@ def _today_path(base_path: str) -> str:
     return f"{root}.{date_tag}{ext}"
 
 def _open_append(path: str):
-    # Append as a new gzip member (concatenated streams valid by RFC 1952)
     return gzip.open(path, mode="ab")
 
 def log_decision(event: str, rid: str, payload: Dict[str, Any],
@@ -30,7 +29,6 @@ def log_decision(event: str, rid: str, payload: Dict[str, Any],
 
 def _latest_shard(base_path: str) -> str | None:
     root, ext = os.path.splitext(base_path)
-    # match all rotated shards
     candidates = sorted(glob.glob(f"{root}.*{ext}"))
     return candidates[-1] if candidates else (base_path if os.path.exists(base_path) else None)
 

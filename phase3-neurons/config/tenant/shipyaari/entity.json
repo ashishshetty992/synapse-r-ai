@@ -1,0 +1,10 @@
+{
+  "entity_blend": { 
+    "entityWeight": 0.70, 
+    "fieldWeight": 0.30, 
+    "entityAliasAlpha": 0.15 
+  },
+  "centroid_gamma": 0.60,
+  "role_alpha": 0.10
+}
+
