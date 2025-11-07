@@ -1,5 +1,5 @@
 {
-  "checkpoint": "acme/trainer_20251106_1507",
-  "shaping": "/Users/shipyaari/other-projects/codemonklab/synapse-r-phase1/phase3-neurons/checkpoints/acme/trainer_20251106_1507/shaping.json",
-  "fewshot": "/Users/shipyaari/other-projects/codemonklab/synapse-r-phase1/phase3-neurons/checkpoints/acme/trainer_20251106_1507/fewshot.json"
+  "checkpoint": "acme/trainer_20251107_1540",
+  "shaping": "/Users/shipyaari/other-projects/codemonklab/synapse-r-phase1/phase3-neurons/checkpoints/acme/trainer_20251107_1540/shaping.json",
+  "fewshot": "/Users/shipyaari/other-projects/codemonklab/synapse-r-phase1/phase3-neurons/checkpoints/acme/trainer_20251107_1540/fewshot.json"
 }

@@ -39,6 +39,8 @@ else:
     GLOBAL_DIR = os.path.join(CFG_ROOT, "global")
 SYNONYMS_PATH = os.environ.get("NEURONS_SYNONYMS", os.path.join(os.getcwd(), "synonyms.json"))
 CFG_HOT = os.environ.get("NEURONS_CFG_HOT", "0") == "1"
+GLOSSARY_PATH = os.path.join(os.getcwd(), "config", "global", "glossary.json")
+PRINCIPLES_PATH = os.path.join(os.getcwd(), "runtime", "principles.json")
 
 def _load_json(path):
     if not path or not os.path.exists(path): return None
@@ -157,3 +159,17 @@ def load_time_cfg(tenant: str | None):
     gpath = os.path.join(GLOBAL_DIR, "time.json")
     LOG.debug("load_time_cfg(tenant=%s) -> %s", tenant, (tpath or gpath))
     return _load_time_cfg_cached(tenant, _mtime(tpath) if tpath else 0.0, _mtime(gpath))
+
+def load_glossary():
+    """Load glossary.json containing business terms."""
+    try:
+        return json.load(open(GLOSSARY_PATH))
+    except Exception:
+        return {"business_terms": []}
+
+def load_principles():
+    """Load principles.json containing emergent tags and other principles."""
+    try:
+        return json.load(open(PRINCIPLES_PATH))
+    except Exception:
+        return {"emergent": {}}

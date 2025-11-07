@@ -1,9 +1,12 @@
 from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request, Query
 from fastapi.responses import JSONResponse
-import os, time, json, glob, copy, uuid
+from pathlib import Path
+import os, time, json, glob, copy, uuid, random
 from datetime import datetime
 from typing import Optional
+
+random.seed(7)
 from .models import TrainerRunIn, TrainerRunOut, ActivateIn, VersionsOut
 from .deps import CKPT_DIR, ACTIVE_PTR, write_json, clamp
 from .config import load_shaping_cfg, CFG_ROOT, GLOBAL_DIR
@@ -12,6 +15,51 @@ from .active_cfg import active_shaping_path
 from . import main as _main
 
 router = APIRouter(prefix="/trainer", tags=["trainer"])
+
+CHECKPOINTS_DIR = Path(CKPT_DIR)
+
+def _tenant_dir(tenant: str) -> Path:
+    return CHECKPOINTS_DIR / tenant
+
+def _ckpt_dir(tenant: str, ckpt: str) -> Path:
+    return CHECKPOINTS_DIR / ckpt if "/" in ckpt else CHECKPOINTS_DIR / tenant / ckpt
+
+def write_last_eval(tenant: str, ckpt: str, metrics: dict):
+    """
+    Canonical writer:
+      - checkpoints/<tenant>/last_eval.json   (tenant-level canonical)
+      - checkpoints/<tenant>/<ckpt>/last_eval.json (for reproducibility)
+    """
+    tdir = _tenant_dir(tenant)
+    tdir.mkdir(parents=True, exist_ok=True)
+    payload = dict(metrics)
+    payload["ckpt"] = ckpt if "/" in ckpt else f"{tenant}/{ckpt}"
+    (tdir / "last_eval.json").write_text(json.dumps(payload, indent=2))
+    cdir = _ckpt_dir(tenant, ckpt)
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / "last_eval.json").write_text(json.dumps(payload, indent=2))
+
+def read_last_eval(tenant: str) -> dict | None:
+    """
+    Prefer tenant-level last_eval.json; fall back to newest checkpoint's last_eval.json;
+    as a last resort, newest checkpoint's metrics.json.
+    """
+    tfile = _tenant_dir(tenant) / "last_eval.json"
+    if tfile.exists():
+        return json.loads(tfile.read_text())
+    # newest checkpoint by mtime
+    ckpt_glob = str(_tenant_dir(tenant) / "trainer_*")
+    cands = sorted(glob.glob(ckpt_glob), key=lambda p: Path(p).stat().st_mtime, reverse=True)
+    for c in cands:
+        p = Path(c) / "last_eval.json"
+        if p.exists():
+            return json.loads(p.read_text())
+        m = Path(c) / "metrics.json"
+        if m.exists():
+            payload = json.loads(m.read_text())
+            payload["ckpt"] = f"{tenant}/{Path(c).name}"
+            return payload
+    return None
 
 def _rid(request: Optional[Request]) -> str:
     try:
@@ -93,13 +141,46 @@ async def trainer_run(inp: TrainerRunIn, request: Request = None):
     out_dir = os.path.join(CKPT_DIR, tenant, ckpt_name)
     os.makedirs(out_dir, exist_ok=True)
 
+    # Latin-hypercube search over parameter grid
+    candidates = []
+    grid = [
+        ("weights.alias_alpha", [0.30, 0.35, 0.40, 0.45]),
+        ("weights.metric_alpha", [0.10, 0.12, 0.15]),
+        ("pathScoring.cosineWeight", [0.70, 0.75, 0.80]),
+        ("pathScoring.lengthPriorBase", [0.90, 0.92, 0.94]),
+        ("salience.gamma", [0.10, 0.15, 0.20]),
+    ]
+    samples = min(int(inp.maxGrid or 16), 32)
+    for _ in range(samples):
+        cand = copy.deepcopy(s)
+        for k, vals in grid:
+            tgt = cand
+            parts = k.split(".")
+            for p in parts[:-1]:
+                tgt = tgt.setdefault(p, {})
+            tgt[parts[-1]] = random.choice(vals)
+        candidates.append(cand)
+
+    best = {"metrics": {"top1_acc": 0, "mrr": 0}, "cfg": s}
+    for cfg in candidates:
+        try:
+            m = compute_metrics_for_tenant(tenant=tenant, shaping=cfg, fewshot=_DEFAULT_FEWSHOT)
+            if (m.get("top1_acc", 0), m.get("mrr", 0)) > (best["metrics"].get("top1_acc", 0), best["metrics"].get("mrr", 0)):
+                best = {"metrics": m, "cfg": cfg}
+        except Exception as _e:
+            continue
+
+    s = best["cfg"]
+    metrics = best["metrics"]
+    principles = {"enabled": {"unknownBackoff": True, "hubPenalty": True}, "notes": "auto-toggle v1"}
+
     write_json(os.path.join(out_dir, 'shaping.json'), s)
     write_json(os.path.join(out_dir, 'fewshot.json'), _DEFAULT_FEWSHOT)
-    try:
-        metrics = compute_metrics_for_tenant(tenant=tenant, shaping=s, fewshot=_DEFAULT_FEWSHOT)
-    except Exception as _e:
-        metrics = {"top1_acc": 0.0, "mrr": 0.0, "slot_f1": 0.0, "aplus_mean": 0.0, "pathscore_mean": 0.0, "n_golden": 0, "n_feedback": 0, "error": str(_e)}
+    write_json(os.path.join(out_dir, 'principles.json'), principles)
     write_json(os.path.join(out_dir, 'metrics.json'), metrics)
+    
+    # Write canonical last_eval.json (tenant-level + checkpoint-scoped)
+    write_last_eval(tenant, ckpt_name, metrics)
     
     try:
         if getattr(_main, "PROM_REG", None):
@@ -160,44 +241,37 @@ async def trainer_versions(request: Request = None):
 @router.get("/last_eval")
 def trainer_last_eval(request: Request, tenant: Optional[str] = Query(None)):
     """
-    Returns metrics for the active checkpoint.
-    Looks up runtime/active.json → directory → metrics.json.
+    Returns metrics from canonical tenant-level last_eval.json.
+    Falls back to newest checkpoint's last_eval.json or metrics.json.
     """
     rid = _rid(request)
     try:
-        # Resolve active shaping path (points into checkpoints/<tenant>/<ckpt>/shaping.json)
-        shaping_path = active_shaping_path()
-        
-        if not shaping_path or not os.path.exists(shaping_path):
-            return JSONResponse(
-                {"ok": False, "error": "no active checkpoint or shaping.json missing", "requestId": rid},
-                status_code=404
-            )
-        
-        ckpt_dir = os.path.dirname(shaping_path)
-        metrics_path = os.path.join(ckpt_dir, "metrics.json")
-        
-        # Derive checkpoint name from ckpt_dir tail (e.g., 'acme/trainer_YYYYMMDD_HHMM' or 'trainer_...')
-        # The tail is usually ".../checkpoints/<tenant>/<ckpt>", so get the last two
-        parts = ckpt_dir.replace("\\", "/").split("/")
-        checkpoint = "/".join(parts[-2:]) if len(parts) >= 2 else os.path.basename(ckpt_dir)
-        
-        if not os.path.exists(metrics_path):
-            # Not fatal—return empty metrics but 200 so tooling can proceed
+        # Get tenant from query param, request state, or default
+        tenant_id = tenant or getattr(request.state, "tenant_id", None) or "acme"
+        payload = read_last_eval(tenant_id)
+        if payload is None:
             return {
-                "ok": True,
-                "checkpoint": checkpoint,
-                "metrics": {},
+                "ok": None,
+                "checkpoint": None,
+                "top1_acc": None,
+                "mrr": None,
+                "slot_f1": None,
+                "slot_breakdown": {},
+                "aplus_mean": None,
+                "pathscore_mean": None,
+                "snapshot": {},
                 "requestId": rid
             }
-        
-        with open(metrics_path, "r") as f:
-            metrics = json.load(f)
-        
+        # Ensure consistent response format with ok and checkpoint fields
+        # Create response with ok and checkpoint, excluding ckpt from payload to avoid duplication
+        response = dict(payload)
+        ckpt_value = response.pop("ckpt", None)
+        # Remove requestId if it exists in payload (we'll add it at the end)
+        response.pop("requestId", None)
         return {
             "ok": True,
-            "checkpoint": checkpoint,
-            "metrics": metrics,
+            "checkpoint": ckpt_value,
+            **response,  # Spread all other fields (top1_acc, mrr, etc.)
             "requestId": rid
         }
     except Exception as e:

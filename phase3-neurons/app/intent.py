@@ -4,6 +4,21 @@ from collections import defaultdict, Counter
 
 import numpy as np
 
+# === Fuzzy correction stopword guard ===
+_STOPWORD_GUARD = {
+    "in", "of", "for", "by", "to", "on", "at", "from", "as", "with", "via", "using",
+    "the", "and", "or", "but", "if", "then", "else", "elif", "while", "do", "until",
+    "loop", "break", "continue", "return", "yield", "raise", "try", "except", "finally",
+    "print", "log", "error", "warning", "info", "debug", "trace", "assert", "verify",
+    "validate", "sanitize", "normalize", "clean", "trim", "strip", "pad", "center",
+    "left", "right", "justify", "wrap", "split", "join", "concat", "merge", "append",
+    "prepend", "insert", "remove", "delete", "replace", "find", "search", "match",
+    "filter", "sort", "reverse", "shuffle", "random", "seed", "hash", "encode", "decode",
+    "encrypt", "decrypt", "compress", "decompress", "serialize", "deserialize", "parse",
+    "format", "sprintf", "println", "printfln", "printfl", "sprintf","println", "printfl",
+    "sprintf", "printfl","printf", "sprintf", "printfl", "sprintf",
+}
+
 
 _word = re.compile(r"[a-z0-9_]+")
 
@@ -329,6 +344,11 @@ def encode_intent_nl(text: str, iem, synonyms: Dict[str, Any],
     corrections: List[Dict[str, str]] = []
     fixed: List[str] = []
     for tok in toks:
+        # Skip stopwords completely
+        if tok.lower() in _STOPWORD_GUARD:
+            fixed.append(tok)
+            continue
+        
         nt = _norm_soft(tok)
         if nt in lexicon:
             fixed.append(tok)
@@ -344,6 +364,10 @@ def encode_intent_nl(text: str, iem, synonyms: Dict[str, Any],
                     best_len, best = d, cand
                     if d == 0: break
         if best is not None:
+            # If the best match is an 'id' type and original token is short or stopwordish, skip it
+            if best.lower() == "id" and len(tok) <= 3:
+                fixed.append(tok)
+                continue
             corrections.append({"from": tok, "to": best, "why": "fuzzy"})
             fixed.append(best)
         else:

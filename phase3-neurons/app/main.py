@@ -19,11 +19,12 @@ except Exception as e:
     logging.warning(f"Failed to load .env: {e}")
 
 from .feedback import router as feedback_router
-from .eval import router as eval_router, eval_alias_router
+from .eval import router as eval_router
 from .trainer import router as trainer_router
 from .fewshot import router as fewshot_router
 from .config_api import router as config_router
 from .golden import router as golden_router
+from .principles import router as principles_router
 
 from .models import (
     BuildIEMRequest, BuildIEMResponse,
@@ -39,9 +40,9 @@ from .models import (
 )
 from .iem import IEMIndex, build_iem_from_uem, compute_role_boost, compute_alias_stability, cluster_quality
 from .intent import encode_intent_to_vocab, encode_intent_nl
-from .synapse import match_candidates, compute_alignplus, _parse_entity_field, _build_join_graph, _bfs_paths, _path_score, score_target_context, resolve_conflicts
+from .synapse import match_candidates, compute_alignplus, _parse_entity_field, _build_join_graph, _bfs_paths, _path_score, score_target_context, resolve_conflicts, compute_salience, default_role_prior_vector
 from .ltr import ltr_rerank_paths, build_degree_index, _path_feats
-from .config import load_role_cfg, load_shaping_cfg, load_entity_cfg, load_synonyms, load_time_cfg, CFG_HOT
+from .config import load_role_cfg, load_shaping_cfg, load_entity_cfg, load_synonyms, load_time_cfg, load_glossary, CFG_HOT
 from .generator import generate_all, write_examples, write_coverage
 from . import synapse
 from .synapse import set_role_config, set_shaping_weights
@@ -203,11 +204,11 @@ app = FastAPI(title="SYNAPSE-R Phase 3 Neurons", version="0.1.0")
 
 app.include_router(feedback_router)
 app.include_router(eval_router)
-app.include_router(eval_alias_router)
 app.include_router(trainer_router)
 app.include_router(fewshot_router)
 app.include_router(config_router)
 app.include_router(golden_router)
+app.include_router(principles_router)
 
 logger = logging.getLogger("neurons")
 logger.addFilter(RequestIdFilter())
@@ -421,6 +422,15 @@ def _load_json_if(path: Optional[str]) -> Optional[dict]:
 def boot():
     global IEM
     try:
+        # Load merged active config first
+        from .active_cfg import load_active_config_merged
+        from .synapse import set_runtime_config
+        cfg = load_active_config_merged()
+        set_runtime_config(cfg)
+    except Exception as e:
+        logger.warning(f"Startup config merge warning: {e}")
+    
+    try:
         if os.path.exists(IEM_PATH):
             IEM = IEMIndex.load(IEM_PATH)
         elif os.path.exists(UEM_PATH):
@@ -428,6 +438,17 @@ def boot():
             iem = build_iem_from_uem(uem, dim=256)
             IEMIndex.save_json(IEM_PATH, iem.to_json())
             IEM = iem
+        
+        # compute & stash salience/prior (read-only; recompute on /iem/build)
+        if IEM is not None:
+            try:
+                glossary = load_glossary()
+                IEM._salience_map = compute_salience(IEM, glossary)
+                IEM._role_prior_vec = default_role_prior_vector(IEM)
+            except Exception as e:
+                logger.warning(f"Startup salience warning: {e}")
+                IEM._salience_map = {}
+                IEM._role_prior_vec = {}
     except Exception as e:
         logger.warning(f"Startup warning: {e}")
     
@@ -550,6 +571,16 @@ def iem_build(req: BuildIEMRequest = Body(...), request: Request = None):
 
         IEMIndex.save_json(out_path, iem.to_json())
         IEM = iem
+        
+        # compute & stash salience/prior (read-only; recompute on /iem/build)
+        try:
+            glossary = load_glossary()
+            IEM._salience_map = compute_salience(IEM, glossary)
+            IEM._role_prior_vec = default_role_prior_vector(IEM)
+        except Exception as e:
+            log_json("warning", rid, "iem.salience.error", error=str(e))
+            IEM._salience_map = {}
+            IEM._role_prior_vec = {}
 
         log_json("info", rid, "iem.build", dim=iem.dim, fields=len(iem.fields))
         return BuildIEMResponse(**ok(rid, {"dim": iem.dim, "fieldCount": len(iem.fields), "savedTo": out_path}))
@@ -636,11 +667,12 @@ def synapse_match(req: MatchRequest = Body(...), request: Request = None):
     )
     out.debug["tenantId"] = getattr(request.state, "tenant_id", None)
     experiment = getattr(request.state, "experiment", "")
-    source = "tenant" if experiment == "baseline-only" else "active"
-    path_scoring = synapse._CONFIG.get("pathScoring", {})
-    if isinstance(path_scoring, dict):
-        path_scoring = {**path_scoring, "_source": source}
-    out.debug["pathScoring"] = path_scoring
+    synapse._current_experiment = experiment  # Store for _debug_path_scoring_source
+    out.debug["pathScoring"] = synapse._debug_path_scoring_source()
+    out.debug["principles"] = {
+        "enabled": synapse._CONFIG.get("_merged", {}).get("principlesEnabled", []),
+        "_source": "active"
+    }
     out.debug["requestId"] = rid
     try:
         do_shadow = TRAINER_SHADOW_ONLY or (getattr(request.state, "experiment", "") == "train-shadow")
@@ -707,12 +739,23 @@ def iem_verify(request: Request = None):
     warnings = [f"Low cluster cohesion for role {c.role}" for c in clusters if c.avgSim < 0.5]
 
     log_json("info", rid, "iem.verify", rbCount=len(role_boost_stats), driftCount=len(drift_alerts))
+    
+    salience_map = getattr(IEM, "_salience_map", {}) or {}
+    salience_preview = sorted(
+        [{"field": k, "sal": round(v, 3)} for k, v in salience_map.items()],
+        key=lambda x: x["sal"], reverse=True
+    )[:8]
+    
+    role_prior_vec = getattr(IEM, "_role_prior_vec", {}) or {}
+    
     return VerifyIEMResponse(
         ok=True,
         roleBoost=role_boost_stats,
         drift=drift_alerts,
         clusters=clusters,
         warnings=warnings,
+        saliencePreview=salience_preview if salience_preview else None,
+        rolePriorVector=role_prior_vec if role_prior_vec else None,
         requestId=rid
     )
 
@@ -884,11 +927,18 @@ def synapse_fill(req: FillRequest = Body(...), request: Request = None):
                     picked.append(cand)
 
         pivot = picked[0] if picked else (adjusted[0] if adjusted else None)
+        # Start from the user's intent and NEVER overwrite a valid categorical target
         intent_filled = dict(req.intent)
-        if pivot:
-            intent_filled["target"] = f"{pivot.entity}.{pivot.name}"
-
+        req_target = (req.intent or {}).get("target")
+        
+        def _valid_target(t: str | None) -> bool:
+            return isinstance(t, str) and "." in t  # naive but effective for our schema (e.g., "product.category")
+        
+        # Build vector from the user's original intent to avoid moving the target
         intent_vec = encode_intent_to_vocab(intent_filled, IEM.vocab)
+        
+        # Resolve conflicts; this may *suggest* a better categorical target,
+        # but we won't mutate intent_filled.target — we'll return it as chosenTarget instead.
         conflicts_resolved, upgraded_target = resolve_conflicts(
             iem=IEM,
             intent_vec=intent_vec,
@@ -897,9 +947,22 @@ def synapse_fill(req: FillRequest = Body(...), request: Request = None):
             pivot=pivot,
             match_debug=match_out.debug
         )
-
-        if upgraded_target:
-            intent_filled["target"] = upgraded_target
+        
+        chosen_target = None
+        if upgraded_target and (not _valid_target(req_target) or upgraded_target != req_target):
+            chosen_target = upgraded_target
+        # Only set target if user didn't provide one (backward compatibility)
+        elif not _valid_target(req_target) and pivot:
+            intent_filled["target"] = f"{pivot.entity}.{pivot.name}"
+            chosen_target = intent_filled["target"]
+        
+        # --- Timestamp slot assignment ---
+        slots = intent_filled.get("slots", {})
+        ts_pick = next((c["resolution"] for c in conflicts_resolved if c.get("slot") == "timestamp"), None)
+        if ts_pick:
+            slots["timestamp"] = ts_pick
+        if slots:
+            intent_filled["slots"] = slots
 
         abase = 0.0
         if pivot:
@@ -924,20 +987,40 @@ def synapse_fill(req: FillRequest = Body(...), request: Request = None):
             "preferTargetsUsed": req.preferTargets or [],
             "preferTargetsBoostUsed": req.preferTargetsBoost or {},
             "aliasTargetsUsed": req.aliasTargets or [],
+            "pathScoring": synapse._debug_path_scoring_source(),
         }
+        
+        # Add salience debug when features requested
+        want_feats = (request.headers.get("x-features", "").lower() in {"1", "true"}) or (request.query_params.get("features", "") in {"1", "true"})
+        if want_feats:
+            from .synapse import _get_salience_map
+            sal_map = _get_salience_map(IEM)
+            sal_cfg = synapse._CONFIG.get("salience", {})
+            gamma = float(sal_cfg.get("gamma", 0.0))
+            debug["salienceUsed"] = gamma
+            # top 5 by salience
+            top_sal = sorted(sal_map.items(), key=lambda kv: kv[1], reverse=True)[:5]
+            debug["topSalience"] = [{"field": k, "sal": round(v, 3)} for k, v in top_sal]
+            # role prior vector if available
+            if hasattr(IEM, "_role_prior_vec"):
+                debug["rolePriorVector"] = IEM._role_prior_vec
         
         if req.debugExplain:
             debug["targetExplain"] = _explain_candidate_scores(adjusted_dicts)
 
         resp = FillResponse(
             ok=True,
-            intentFilled=intent_filled,
+            intentFilled=intent_filled,  # preserves req target if present
+            chosenTarget=chosen_target,  # advisory if resolver prefers another categorical field
             targetCandidates=picked,
             entityCandidates=ents,
             conflicts=[ConflictNote(
                 slot=c["slot"],
                 candidates=c["candidates"],
                 resolution=c.get("resolution"),
+                selectedBy=c.get("selectedBy"),
+                decisionScore=c.get("decisionScore"),
+                bestNumericScore=c.get("bestNumericScore"),
                 why=c.get("why", {}),
                 scores=c.get("scores")
             ) for c in conflicts_resolved],
@@ -960,7 +1043,7 @@ def synapse_fill(req: FillRequest = Body(...), request: Request = None):
                 resp.debug["shadow"] = {
                     "mode": "baseline-vs-active",
                     "baselineTop": f"{base_top.entity}.{base_top.name}" if base_top else None,
-                    "activeTop": resp.intentFilled.get("target"),
+                    "activeTop": resp.chosenTarget or resp.intentFilled.get("target"),
                 }
         except Exception as _e:
             resp.debug["shadowError"] = str(_e)
@@ -1167,6 +1250,20 @@ def synapse_paths(req: PathsRequest = Body(...), request: Request = None):
         if want_feats and path_features:
             debug_dict["pathFeatures"] = path_features
         
+        # Add salience debug when features requested
+        if want_feats:
+            from .synapse import _get_salience_map
+            sal_map = _get_salience_map(IEM)
+            sal_cfg = synapse._CONFIG.get("salience", {})
+            gamma = float(sal_cfg.get("gamma", 0.0))
+            debug_dict["salienceUsed"] = gamma
+            # top 5 by salience
+            top_sal = sorted(sal_map.items(), key=lambda kv: kv[1], reverse=True)[:5]
+            debug_dict["topSalience"] = [{"field": k, "sal": round(v, 3)} for k, v in top_sal]
+            # role prior vector if available
+            if hasattr(IEM, "_role_prior_vec"):
+                debug_dict["rolePriorVector"] = IEM._role_prior_vec
+        
         return PathsResponse(
             ok=True, 
             paths=out, 
@@ -1213,7 +1310,7 @@ def synapse_explain(req: ExplainRequest = Body(...), request: Request = None):
 
         resp = ExplainResponse(
             intentFilled=fobj.intentFilled,
-            targetChosen=fobj.intentFilled.get("target"),
+            targetChosen=fobj.chosenTarget or fobj.intentFilled.get("target"),
             explains=explains,
             alignPlus=fobj.alignPlus,
             debug={},

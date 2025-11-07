@@ -3,6 +3,35 @@ from fastapi import APIRouter, Request, Query
 from fastapi.responses import JSONResponse
 import os, json, glob, math, uuid
 from typing import Dict, Any, List, Tuple, Optional
+
+def _score_slots(expected_slots: Dict[str, str], got_slots: Dict[str, str]) -> Tuple[int, int, int, Dict[str, Dict[str, int]]]:
+    """
+    Generic slot scorer (micro). Returns (tp, fp, fn, per_slot_counts).
+    - Exact-string match for each slot key present in expected.
+    - We don't penalize for extra slots not in expected (can be toggled later).
+    """
+    tp = fp = fn = 0
+    per_slot: Dict[str, Dict[str, int]] = {}
+    exp = expected_slots or {}
+    got = got_slots or {}
+
+    for k, v in exp.items():
+        per_slot.setdefault(k, {"tp": 0, "fp": 0, "fn": 0})
+        got_v = got.get(k)
+        if got_v is None:
+            fn += 1
+            per_slot[k]["fn"] += 1
+        elif got_v == v:
+            tp += 1
+            per_slot[k]["tp"] += 1
+        else:
+            # slot present but wrong value
+            fp += 1
+            fn += 1
+            per_slot[k]["fp"] += 1
+            per_slot[k]["fn"] += 1
+
+    return tp, fp, fn, per_slot
 from .deps import DATA_DIR, GOLDEN_DIR, ACTIVE_PTR
 from .utils_jsonl import read_jsonl
 from .models import EvalOut
@@ -11,7 +40,7 @@ from .synapse import match_candidates, compute_alignplus, score_target_context
 from .active_cfg import active_shaping_path
 from . import main as service_main
 
-router = APIRouter(prefix="/trainer", tags=["trainer"])
+router = APIRouter(prefix="/eval", tags=["eval"])
 
 def _rid(request: Optional[Request]) -> str:
     try:
@@ -28,7 +57,12 @@ def _iter_golden(tenant: str | None) -> List[Dict[str, Any]]:
     items = []
     for p in paths:
         try:
-            items.append(json.load(open(p)))
+            obj = json.load(open(p))
+            if isinstance(obj, list):
+                # file stores a list of items (our current golden_add behavior)
+                items.extend([x for x in obj if isinstance(x, dict)])
+            elif isinstance(obj, dict):
+                items.append(obj)
         except Exception:
             pass
     return items
@@ -64,6 +98,9 @@ def compute_metrics_for_tenant(tenant: str, shaping: Dict[str, Any] | None = Non
     sum_slot_f1 = 0.0
     sum_aplus = 0.0
     sum_path = 0.0
+    # slot scoring (micro)
+    slot_tp = slot_fp = slot_fn = 0
+    per_slot_totals: Dict[str, Dict[str, int]] = {}
     for row in gold:
         intent = row.get("intent") or {}
         expected = row.get("expected") or {}
@@ -76,12 +113,6 @@ def compute_metrics_for_tenant(tenant: str, shaping: Dict[str, Any] | None = Non
             rank = ranked.index(exp_target) + 1
             sum_rr += 1.0 / rank
             if rank == 1: top1_hits += 1
-        predicted_slots: Dict[str, str] = {}
-        for sf in m.topFields[:8]:
-            role = sf.roleTop or "unknown"
-            key = role
-            predicted_slots.setdefault(key, f"{sf.entity}.{sf.name}")
-        sum_slot_f1 += _slot_f1(exp_slots, predicted_slots)
         tgt = exp_target or (ranked[0] if ranked else None)
         if tgt:
             abase = 0.0
@@ -92,19 +123,69 @@ def compute_metrics_for_tenant(tenant: str, shaping: Dict[str, Any] | None = Non
             sum_aplus += ap["Aplus"]
             ctx = score_target_context(IEM, intent_vec, tgt, intent_obj=intent)
             sum_path += float(ctx.get("PathScore", 0.0))
+
+        # ---- Slot scoring (e.g., timestamp) ----
+        # Use synapse_fill to get actual slots from conflict resolution
+        from .main import synapse_fill
+        from .models import FillRequest
+        try:
+            fill_req = FillRequest(intent=intent, topKTargets=8)
+            fill_resp = synapse_fill(fill_req, request=None)
+            got_slots = (fill_resp.get("intentFilled") or {}).get("slots") or {}
+        except Exception:
+            got_slots = {}
+        tp, fp, fn, per_slot = _score_slots(exp_slots, got_slots)
+        slot_tp += tp; slot_fp += fp; slot_fn += fn
+        # accumulate per-slot breakdown
+        for k, c in per_slot.items():
+            d = per_slot_totals.setdefault(k, {"tp": 0, "fp": 0, "fn": 0})
+            d["tp"] += c["tp"]; d["fp"] += c["fp"]; d["fn"] += c["fn"]
     n_feedback = len(read_jsonl(os.path.join(DATA_DIR, 'feedback.jsonl')))
+    
+    # -- config snapshot (read-only, safe to log/serialize)
+    from . import synapse
+    cfg = synapse._CONFIG  # already merged with active shaping if any
+    snapshot = {
+        "pathScoring": dict(cfg.get("pathScoring", {})),
+        # (optional) include more later if you want:
+        # "fill": dict(cfg.get("fill", {})),
+        # "alignPlus": dict(cfg.get("alignPlus", {})),
+        # "weights": dict(cfg.get("weights", {})),
+    }
+    
+    # micro-F1 for slots
+    slot_precision = (slot_tp / (slot_tp + slot_fp)) if (slot_tp + slot_fp) > 0 else 0.0
+    slot_recall    = (slot_tp / (slot_tp + slot_fn)) if (slot_tp + slot_fn) > 0 else 0.0
+    slot_f1 = (2 * slot_precision * slot_recall / (slot_precision + slot_recall)) if (slot_precision + slot_recall) > 0 else 0.0
+
+    top1_acc = top1_hits / max(1, n)
+    mrr = sum_rr / max(1, n)
+    aplus_mean = sum_aplus / max(1, n)
+    pathscore_mean = sum_path / max(1, n)
+
     return {
-        "top1_acc": top1_hits / n,
-        "mrr": sum_rr / n,
-        "slot_f1": sum_slot_f1 / n,
-        "aplus_mean": sum_aplus / n,
-        "pathscore_mean": sum_path / n,
+        "top1_acc": top1_acc,
+        "mrr": mrr,
+        "aplus_mean": aplus_mean,
+        "pathscore_mean": pathscore_mean,
+        "slot_f1": slot_f1,
+        "slot_breakdown": per_slot_totals,
         "n_golden": n,
-        "n_feedback": n_feedback
+        "n_feedback": n_feedback,
+        "snapshot": snapshot,
     }
 
 @router.get('/last_eval', response_model=EvalOut)
 async def last_eval(request: Request = None):
+    """
+    Returns metrics from the active checkpoint's metrics.json file.
+    This is different from /trainer/last_eval which reads from canonical last_eval.json files.
+    
+    This endpoint:
+    - Reads the active checkpoint from runtime/active.json
+    - Loads metrics.json directly from the checkpoint directory
+    - Returns the raw metrics with ckpt field (legacy format for backward compatibility)
+    """
     rid = getattr(request.state, "request_id", "-")
     ckpt = None
     try:
@@ -122,37 +203,3 @@ async def last_eval(request: Request = None):
             except Exception:
                 pass
     return EvalOut(**metrics, ckpt=ckpt, requestId=rid)
-
-# Compatibility alias router for /eval/last_eval
-eval_alias_router = APIRouter(prefix="/eval", tags=["eval"])
-
-@eval_alias_router.get("/last_eval")
-def eval_last_eval(request: Request, tenant: Optional[str] = Query(None)):
-    """
-    Compatibility alias for /trainer/last_eval.
-    """
-    rid = _rid(request)
-    try:
-        shaping_path = active_shaping_path()
-        
-        if not shaping_path or not os.path.exists(shaping_path):
-            return JSONResponse(
-                {"ok": False, "error": "no active checkpoint or shaping.json missing", "requestId": rid},
-                status_code=404
-            )
-        
-        ckpt_dir = os.path.dirname(shaping_path)
-        metrics_path = os.path.join(ckpt_dir, "metrics.json")
-        
-        parts = ckpt_dir.replace("\\", "/").split("/")
-        checkpoint = "/".join(parts[-2:]) if len(parts) >= 2 else os.path.basename(ckpt_dir)
-        
-        if not os.path.exists(metrics_path):
-            return {"ok": True, "checkpoint": checkpoint, "metrics": {}, "requestId": rid}
-        
-        with open(metrics_path, "r") as f:
-            metrics = json.load(f)
-        
-        return {"ok": True, "checkpoint": checkpoint, "metrics": metrics, "requestId": rid}
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": f"last_eval error: {str(e)}", "requestId": rid}, status_code=500)

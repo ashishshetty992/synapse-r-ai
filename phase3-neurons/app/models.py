@@ -148,6 +148,8 @@ class VerifyIEMResponse(BaseModel):
     drift: List[DriftAlert]
     clusters: List[ClusterQuality]
     warnings: List[str]
+    saliencePreview: Optional[List[Dict[str, Any]]] = None
+    rolePriorVector: Optional[Dict[str, float]] = None
     requestId: Optional[str] = None
 
 class NLRequest(BaseModel):
@@ -217,6 +219,9 @@ class ConflictNote(BaseModel):
     slot: str
     candidates: List[str]
     resolution: Optional[str] = None
+    selectedBy: Optional[str] = None
+    decisionScore: Optional[float] = None
+    bestNumericScore: Optional[float] = None
     why: Optional[Dict[str, Any]] = None
     scores: Optional[List[Dict[str, Any]]] = None
 
@@ -272,6 +277,7 @@ class ExplainResponse(BaseModel):
 class FillResponse(BaseModel):
     ok: bool = True
     intentFilled: Dict[str, Any]
+    chosenTarget: Optional[str] = None  # Advisory: resolver's preferred target if different from user's
     targetCandidates: List[ScoredField]
     entityCandidates: List[ScoredEntity]
     conflicts: List[ConflictNote]
@@ -357,5 +363,20 @@ class EvalOut(BaseModel):
 
 class FewshotShowOut(BaseModel):
     tenant: str
+    merged: Dict[str, Any]
+    requestId: Optional[str] = None
+
+class RolePriorVector(BaseModel):
+    id: float = 0.0
+    timestamp: float = 0.0
+    money: float = 0.0
+    geo: float = 0.0
+    category: float = 0.0
+    quantity: float = 0.0
+    text: float = 0.0
+    unknown: float = 0.0
+
+class PrinciplesOut(BaseModel):
+    ok: bool
     merged: Dict[str, Any]
     requestId: Optional[str] = None

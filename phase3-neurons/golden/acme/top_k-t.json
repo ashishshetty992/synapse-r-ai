@@ -30,5 +30,157 @@
     "notes": "Top city by revenue",
     "tenant": "acme",
     "ts": 1762422921430
+  },
+  {
+    "intent": {
+      "ask": "top_k",
+      "metric": {
+        "op": "sum",
+        "target": "orders.total_amount"
+      },
+      "target": "customer.segment"
+    },
+    "expected": {
+      "target": "customer.segment",
+      "slots": {
+        "metric": "orders.total_amount"
+      }
+    },
+    "notes": "Top customer segment by revenue",
+    "tenant": "acme",
+    "ts": 1762437327882
+  },
+  {
+    "intent": {
+      "ask": "top_k",
+      "metric": {
+        "op": "sum",
+        "target": "orders.total_amount"
+      },
+      "target": "product.category"
+    },
+    "expected": {
+      "target": "product.category",
+      "slots": {
+        "metric": "orders.total_amount"
+      }
+    },
+    "notes": "Top product category by revenue",
+    "tenant": "acme",
+    "ts": 1762437327883
+  },
+  {
+    "intent": {
+      "ask": "count",
+      "metric": {
+        "op": "count",
+        "target": "orders.id"
+      },
+      "target": "orders.status"
+    },
+    "expected": {
+      "target": "orders.status",
+      "slots": {
+        "metric": "orders.id"
+      }
+    },
+    "notes": "Count orders by status",
+    "tenant": "acme",
+    "ts": 1762437327884
+  },
+  {
+    "intent": {
+      "ask": "top_k",
+      "metric": {
+        "op": "sum",
+        "target": "orders.total_amount"
+      },
+      "target": "orders.country"
+    },
+    "expected": {
+      "target": "orders.country",
+      "slots": {
+        "metric": "orders.total_amount"
+      }
+    },
+    "notes": "Top country by revenue",
+    "tenant": "acme",
+    "ts": 1762437327885
+  },
+  {
+    "intent": {
+      "ask": "top_k",
+      "metric": {
+        "op": "sum",
+        "target": "order_item.quantity"
+      },
+      "target": "product.category"
+    },
+    "expected": {
+      "target": "product.category",
+      "slots": {
+        "metric": "order_item.quantity"
+      }
+    },
+    "notes": "Top product category by quantity sold",
+    "tenant": "acme",
+    "ts": 1762437327886
+  },
+  {
+    "intent": {
+      "ask": "count",
+      "metric": {
+        "op": "count",
+        "target": "orders.id"
+      },
+      "target": "orders.shipping_city"
+    },
+    "expected": {
+      "target": "orders.shipping_city",
+      "slots": {
+        "metric": "orders.id"
+      }
+    },
+    "notes": "Count orders by shipping city",
+    "tenant": "acme",
+    "ts": 1762437327887
+  },
+  {
+    "intent": {
+      "ask": "top_k",
+      "metric": {
+        "op": "sum",
+        "target": "orders.total_amount"
+      },
+      "target": "orders.shipping_city"
+    },
+    "expected": {
+      "target": "orders.shipping_city",
+      "slots": {
+        "timestamp": "orders.created_at"
+      }
+    },
+    "notes": "Verify timestamp slot resolves to orders.created_at when pivot is orders",
+    "tenant": "acme",
+    "ts": 1762506259253
+  },
+  {
+    "intent": {
+      "ask": "top_k",
+      "metric": {
+        "op": "sum",
+        "target": "payment.amount"
+      },
+      "target": "orders.shipping_city"
+    },
+    "expected": {
+      "target": "orders.shipping_city",
+      "slots": {
+        "timestamp": "orders.created_at"
+      }
+    },
+    "notes": "Verify timestamp resolves to orders.created_at even when pivot is payment (independence from money pivot)",
+    "tenant": "acme",
+    "ts": 1762506261459
   }
 ]

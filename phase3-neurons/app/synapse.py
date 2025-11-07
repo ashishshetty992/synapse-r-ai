@@ -1,13 +1,15 @@
-import math, json, logging
+import math, json, logging, re, os
 from typing import List, Dict, Any, Optional
-from collections import defaultdict, deque
+from collections import defaultdict, deque, Counter
+from math import sqrt
 
 from .models import MatchResponse, ScoredField, ScoredEntity
 from .iem import IEMIndex
 
 LOG = logging.getLogger(__name__)
 
-_CONFIG = {
+# Default config structure
+_DEFAULT_CONFIG = {
     "role_keywords": {},
     "shaping_weights": {"alias_alpha": 0.35, "shape_alpha": 0.12, "shape_beta": 0.10, "metric_alpha": 0.12},
     "entity_blend": {"entityWeight": 0.70, "fieldWeight": 0.30, "entityAliasAlpha": 0.15},
@@ -33,13 +35,13 @@ _CONFIG = {
         "fkBonus": 0.05,
         "lengthPriorBase": 0.92,
         "cosineWeight": 0.75,
-        # --- new, schema-aware knobs (safe defaults = no change) ---
-        "pkToFkBonus": 0.00,          # forward edge (src PK -> dst FK)
-        "fkToPkBonus": 0.00,          # reverse edge (FK -> PK)
-        "bridgePenalty": 0.00,        # penalize M2M-like "bridge" hops (high-degree intermediary)
-        "hubPenalty": 0.00,           # penalize passing through hubs
-        "hubDegreeThreshold": 8,      # degree >= threshold => considered a hub
-        "fanoutPenalty": 0.00,        # per-hop penalty scaled by dst degree (fanout)
+        "pkToFkBonus": 0.00,
+        "fkToPkBonus": 0.00,
+        "bridgePenalty": 0.00,
+        "hubPenalty": 0.00,
+        "hubDegreeThreshold": 8,
+        "fanoutPenalty": 0.00,
+        "sameEntityTimestampPrior": 0.02,  # NEW: prior for timestamp fields in same entity
     },
     "logging": {
         "decisionsEnabled": True,
@@ -48,7 +50,79 @@ _CONFIG = {
     "alignPlus": {
         "osrZeroWhenNoText": True,
     },
+    "salience": {
+        "gamma": 0.15,
+    },
 }
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Deep merge override into base."""
+    result = dict(base)
+    for k, v in override.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = _deep_merge(result[k], v)
+        else:
+            result[k] = v
+    return result
+
+# Try to load merged config from active checkpoint, fallback to defaults
+try:
+    from .active_cfg import load_active_config_merged
+    active_cfg = load_active_config_merged()
+    if active_cfg:
+        _CONFIG = _deep_merge(_DEFAULT_CONFIG, active_cfg)
+    else:
+        _CONFIG = dict(_DEFAULT_CONFIG)
+except Exception:
+    # Fallback to defaults if active config not available
+    _CONFIG = dict(_DEFAULT_CONFIG)
+
+def set_runtime_config(cfg: dict):
+    """Update _CONFIG with merged active config."""
+    global _CONFIG
+    if cfg:
+        _CONFIG = _deep_merge(_DEFAULT_CONFIG, cfg)
+    else:
+        _CONFIG = dict(_DEFAULT_CONFIG)
+
+# Salience cache
+_SALIENCE_CACHE = None
+
+def _get_salience_map(iem):
+    """Get salience map from IEM or compute fallback version."""
+    global _SALIENCE_CACHE
+    if _SALIENCE_CACHE is not None:
+        return _SALIENCE_CACHE
+    
+    # If IEM already carries salience, use it; else compute a simple version
+    sal = {}
+    if hasattr(iem, "_salience_map") and isinstance(iem._salience_map, dict):
+        sal = iem._salience_map
+    else:
+        # fallback: PK/FK/UNIQUE/INDEX → weight; name tokens → tiny bump
+        base = {}
+        for f in iem.fields:
+            key = f"{f.entity}.{f.name}"
+            w = 0.0
+            if getattr(f, "is_pk", False):
+                w += 1.0
+            if getattr(f, "is_fk", False):
+                w += 0.6
+            if getattr(f, "is_unique", False):
+                w += 0.3
+            if getattr(f, "is_indexed", False):
+                w += 0.2
+            nm = (f.name or "").lower()
+            for tok in ("price", "amount", "total", "status", "method", "channel", "city", "country", "segment", "category", "id"):
+                if tok in nm:
+                    w += 0.1
+            base[key] = w
+        # normalize 0..1
+        mx = max(base.values()) if base else 1.0
+        sal = {k: (v / mx) for k, v in base.items()}
+    
+    _SALIENCE_CACHE = sal
+    return sal
 
 def set_role_config(keywords: dict[str, list[str]] | None = None):
     if keywords: 
@@ -99,17 +173,20 @@ def set_fill_config(d: dict | None):
 
 def set_path_scoring(d: dict | None):
     if not d: return
+    ps_cfg = _CONFIG.get("pathScoring", {})
     _CONFIG["pathScoring"] = {
         "idPrior": float(d.get("idPrior", 0.10)),
         "fkBonus": float(d.get("fkBonus", 0.05)),
         "lengthPriorBase": float(d.get("lengthPriorBase", 0.92)),
         "cosineWeight": float(d.get("cosineWeight", 0.75)),
-        "pkToFkBonus": float(d.get("pkToFkBonus", _CONFIG["pathScoring"].get("pkToFkBonus", 0.00))),
-        "fkToPkBonus": float(d.get("fkToPkBonus", _CONFIG["pathScoring"].get("fkToPkBonus", 0.00))),
-        "bridgePenalty": float(d.get("bridgePenalty", _CONFIG["pathScoring"].get("bridgePenalty", 0.00))),
-        "hubPenalty": float(d.get("hubPenalty", _CONFIG["pathScoring"].get("hubPenalty", 0.00))),
-        "hubDegreeThreshold": int(d.get("hubDegreeThreshold", _CONFIG["pathScoring"].get("hubDegreeThreshold", 8))),
-        "fanoutPenalty": float(d.get("fanoutPenalty", _CONFIG["pathScoring"].get("fanoutPenalty", 0.00))),
+        "pkToFkBonus": float(d.get("pkToFkBonus", ps_cfg.get("pkToFkBonus", 0.00))),
+        "fkToPkBonus": float(d.get("fkToPkBonus", ps_cfg.get("fkToPkBonus", 0.00))),
+        "bridgePenalty": float(d.get("bridgePenalty", ps_cfg.get("bridgePenalty", 0.00))),
+        "hubPenalty": float(d.get("hubPenalty", ps_cfg.get("hubPenalty", 0.00))),
+        "hubDegreeThreshold": int(d.get("hubDegreeThreshold", ps_cfg.get("hubDegreeThreshold", 8))),
+        "fanoutPenalty": float(d.get("fanoutPenalty", ps_cfg.get("fanoutPenalty", 0.00))),
+        # Safety clamp: sameEntityTimestampPrior between 0.0 and 0.5
+        "sameEntityTimestampPrior": max(0.0, min(0.5, float(d.get("sameEntityTimestampPrior", ps_cfg.get("sameEntityTimestampPrior", 0.02))))),
     }
     print(f"DEBUG: set_path_scoring -> {_CONFIG['pathScoring']}")
     LOG.info(f"set_path_scoring applied: {_CONFIG['pathScoring']}")
@@ -344,6 +421,19 @@ def match_candidates(
             role_shape += metric_alpha_val
 
         score = base * (1.0 + role_bonus) + alias_bonus + role_shape
+        
+        # Apply salience multiplier
+        SALIENCE = getattr(iem, "_salience_map", None)
+        gamma = float((_CONFIG.get("salience") or {}).get("gamma", 0.15)) if "salience" in _CONFIG else 0.15
+        def _apply_salience(target, score):
+            if not SALIENCE:
+                return score
+            s = float(SALIENCE.get(target, 0.0))
+            return float(score) * (1.0 + gamma * s)
+        
+        target_key = f"{f.entity}.{f.name}"
+        score = _apply_salience(target_key, score)
+        
         scored_fields.append(ScoredField(entity=f.entity, name=f.name, score=score, roleTop=top_role))
 
     scored_fields.sort(key=lambda x: x.score, reverse=True)
@@ -437,6 +527,10 @@ def _off_schema_rate(tokens: list[str], mapped: set[str]) -> float:
 def compute_alignplus(Abase: float, intent: Dict[str, Any],
                       tokens: list[str], mapped_terms: set[str],
                       shaping_cfg: dict = None) -> dict:
+    """
+    Compute AlignPlus with deterministic clamps.
+    Prevents scores >1.0 due to salience/bonus inflation.
+    """
     cov = _coverage_score(intent)
 
     # merge: runtime _CONFIG["alignPlus"] is the source of truth; shaping_cfg (if provided)
@@ -450,14 +544,113 @@ def compute_alignplus(Abase: float, intent: Dict[str, Any],
     else:
         osr = _off_schema_rate(tokens, mapped_terms)
 
-    Aplus = float(Abase * (1.0 - osr) * (0.5 + 0.5 * cov))
+    # Clamp Abase
+    Abase = max(0.0, min(1.0, float(Abase)))
+    
+    # Clamp coverage
+    coverage = max(0.0, min(1.0, float(cov)))
+    
+    # Clamp OSR
+    osr = max(0.0, min(1.0, float(osr)))
+
+    # Compute Aplus
+    Aplus = Abase * (1.0 - osr) * (0.5 + 0.5 * coverage)
+    
+    # Final clamp (just in case)
+    Aplus = max(0.0, min(1.0, Aplus))
+    
     return {
-        "Abase": float(Abase),
-        "Coverage": float(cov),
-        "OffSchemaRate": float(osr),
-        "Aplus": float(Aplus),
+        "Abase": Abase,
+        "Coverage": coverage,
+        "OffSchemaRate": osr,
+        "Aplus": Aplus,
     }
 
+
+def _entity_graph(iem: IEMIndex):
+    """Build adjacency by entity via FK-like edges (heuristic: *_id)."""
+    adj = {e: set() for e in {f.entity for f in iem.fields}}
+    by_entity = {}
+    for f in iem.fields:
+        by_entity.setdefault(f.entity, []).append(f)
+    for e, fs in by_entity.items():
+        for f in fs:
+            if f.name.endswith("_id"):
+                tgt = f.name[:-3]  # 'order_id' -> 'order'
+                if tgt in by_entity:
+                    adj[e].add(tgt)
+                    adj[tgt].add(e)
+    return adj
+
+def _centrality(adj):
+    """Degree centrality (cheap & deterministic)."""
+    return {e: float(len(nei)) for e, nei in adj.items()}
+
+def _constraint_weight(field):
+    """Deterministic hints from name; extend later for real metadata."""
+    w = 0.0
+    if field.name in ("id", "order_id", "customer_id", "product_id"):
+        w += 0.5
+    if field.name.endswith("_id"):
+        w += 0.3
+    if field.name in ("created_at",):
+        w += 0.2
+    return w
+
+def _name_confidence(glossary_terms, field):
+    """Check how many glossary terms appear in field name."""
+    toks = re.findall(r"[a-z0-9]+", f"{field.entity}.{field.name}".lower())
+    s = len(set(toks) & set(glossary_terms))
+    return min(1.0, 0.2 * s)
+
+def compute_salience(iem: IEMIndex, glossary: Dict[str, Any]):
+    """
+    Compute salience score for each field based on:
+    - Entity centrality (45%)
+    - Constraint weight (35%)
+    - Name confidence from glossary (20%)
+    Returns normalized salience map (0..1).
+    """
+    adj = _entity_graph(iem)
+    cent = _centrality(adj)
+    terms = set((glossary or {}).get("business_terms", []))
+    sal = {}
+    for f in iem.fields:
+        s = 0.45 * cent.get(f.entity, 0.0)
+        s += 0.35 * _constraint_weight(f)
+        s += 0.20 * _name_confidence(terms, f)
+        sal[f"{f.entity}.{f.name}"] = float(s)
+    # normalize 0..1
+    if sal:
+        mx = max(sal.values()) or 1.0
+        for k in sal:
+            sal[k] = sal[k] / mx
+    return sal
+
+def default_role_prior_vector(iem: IEMIndex):
+    """
+    Derive role prior vector from role composition (share) + centrality bias.
+    Returns dict with role probabilities.
+    """
+    adj = _entity_graph(iem)
+    cent = _centrality(adj)
+    role_sum = Counter()
+    for f in iem.fields:
+        rt = (max((f.role or {}).items(), key=lambda kv: kv[1])[0] if f.role else "unknown")
+        role_sum[rt] += 1 + 0.15 * cent.get(f.entity, 0.0)
+    total = sum(role_sum.values()) or 1.0
+    def pct(x):
+        return float(role_sum.get(x, 0.0)) / total
+    return {
+        "id": pct("id"),
+        "timestamp": pct("timestamp"),
+        "money": pct("money"),
+        "geo": pct("geo"),
+        "category": pct("category"),
+        "quantity": pct("quantity"),
+        "text": pct("text"),
+        "unknown": pct("unknown")
+    }
 
 def _build_join_graph(iem: IEMIndex) -> dict[str, list[tuple[str,str,str,str]]]:
     """Return adjacency: entity -> list of (srcField, dstEntity, dstField, why)"""
@@ -509,6 +702,23 @@ def _field_map(iem) -> dict:
 
 def _cos(a: list[float], b: list[float]) -> float:
     return sum(x*y for x, y in zip(a, b)) if a and b else 0.0
+
+def _debug_path_scoring_source():
+    """Helper to build pathScoring debug dict with all supported keys."""
+    cfg = _CONFIG.get("pathScoring", {})
+    # Include *all* supported keys, even if 0.0, so the UI/curl shows them
+    keys = [
+        "idPrior", "fkBonus", "lengthPriorBase", "cosineWeight",
+        "pkToFkBonus", "fkToPkBonus", "bridgePenalty", "hubPenalty",
+        "hubDegreeThreshold", "fanoutPenalty",
+        # NEW
+        "sameEntityTimestampPrior",
+    ]
+    out = {k: float(cfg.get(k, 0.0)) for k in keys}
+    # Get experiment from module-level variable if set
+    experiment = globals().get("_current_experiment", "")
+    out["_source"] = "tenant" if experiment == "baseline-only" else "active"
+    return out
 
 def _role_prob(f, role: str) -> float:
     if not getattr(f, "role", None): return 0.0
@@ -562,9 +772,33 @@ def score_target_context(iem, intent_vec, target_full: str, intent_obj: dict | N
         pivot_entity = entity
 
     if pivot_entity == entity:
-        id_prior = _CONFIG["pathScoring"]["idPrior"]
-        prior = id_prior if field.endswith("_id") else 0.0
-        return {"CosineContext": float(cos), "RoleCoherence": role_prob, "PathScore": float(prior)}
+        ps_cfg = _CONFIG["pathScoring"]
+        id_prior = float(ps_cfg.get("idPrior", 0.0))
+        ts_prior = float(ps_cfg.get("sameEntityTimestampPrior", 0.0))
+        prior = 0.0
+
+        debug_meta = {
+            "timestampPriorApplied": False,
+            "timestampPriorValue": 0.0,
+            "localityDecayApplied": False
+        }
+
+        # timestamp same-entity prior
+        if (f.role or {}).get("timestamp", 0.0) > 0.0:
+            prior = ts_prior
+            debug_meta["timestampPriorApplied"] = True
+            debug_meta["timestampPriorValue"] = ts_prior
+        # preserve the existing id prior behavior for *_id fields
+        if field.endswith("_id"):
+            prior += id_prior
+
+        out = {
+            "CosineContext": float(cos),
+            "RoleCoherence": role_prob,
+            "PathScore": float(prior),
+            "_debug": debug_meta
+        }
+        return out
 
     adj = _build_join_graph(iem)
     raw_paths = _bfs_paths(adj, start=pivot_entity, goal=entity, max_hops=3)
@@ -573,10 +807,24 @@ def score_target_context(iem, intent_vec, target_full: str, intent_obj: dict | N
         return {"CosineContext": float(cos), "RoleCoherence": role_prob, "PathScore": 0.0}
 
     ps_cfg = _CONFIG["pathScoring"]
-    id_prior = float(ps_cfg["idPrior"])
-    fk_bonus = float(ps_cfg["fkBonus"])
-    length_decay = float(ps_cfg["lengthPriorBase"])
-    cos_w = float(ps_cfg["cosineWeight"])
+    id_prior = float(ps_cfg.get("idPrior", 0.1))
+    fk_bonus = float(ps_cfg.get("fkBonus", 0.05))
+    length_decay = float(ps_cfg.get("lengthPriorBase", 0.92))
+    cos_w = float(ps_cfg.get("cosineWeight", 0.75))
+    
+    # NEW knobs picked from merged shaping/principles
+    pk_to_fk = float(ps_cfg.get("pkToFkBonus", 0.0))
+    fk_to_pk = float(ps_cfg.get("fkToPkBonus", 0.0))
+    bridge_pen = float(ps_cfg.get("bridgePenalty", 0.0))
+    hub_pen = float(ps_cfg.get("hubPenalty", 0.0))
+    hub_thr = int(ps_cfg.get("hubDegreeThreshold", 8))
+    fanout_pen = float(ps_cfg.get("fanoutPenalty", 0.0))
+    
+    # Pre-compute degrees once
+    adj = _build_join_graph(iem)
+    deg = defaultdict(int)
+    for u, edges in adj.items():
+        deg[u] = len(edges)
 
     best = 0.0
     name_map = {(ff.entity, ff.name): ff for ff in iem.fields}
@@ -586,11 +834,30 @@ def score_target_context(iem, intent_vec, target_full: str, intent_obj: dict | N
         hop_cos = []
         for (srcE, srcF, dstE, dstF, why) in edges:
             prior = 0.0
+            # base priors
             if srcF.endswith("_id") or dstF.endswith("_id"):
                 prior += id_prior
-            if "fk" in (why or ""):
+            if "fk" in (why or ""):  # your existing "fk" labeling
                 prior += fk_bonus
+            
+            # NEW: direction bonuses if your "why" encodes direction
+            wy = (why or "").lower()
+            if "pk->fk" in wy or wy == "fk":  # forward PK->FK
+                prior += pk_to_fk
+            elif "fk->pk" in wy or wy == "fk_rev":  # reverse FK->PK
+                prior += fk_to_pk
+            
+            # NEW: structural penalties
+            if deg.get(srcE, 0) >= hub_thr or deg.get(dstE, 0) >= hub_thr:
+                prior -= hub_pen
+            if "bridge" in wy:
+                prior -= bridge_pen
+            
+            # optional: if an edge fans out a lot (heuristic)
+            if deg.get(srcE, 0) > deg.get(dstE, 0) + 4:
+                prior -= fanout_pen
 
+            # cosine on hop endpoints (existing)
             a = name_map.get((srcE, srcF))
             b = name_map.get((dstE, dstF))
             if a and b:
@@ -608,7 +875,100 @@ def score_target_context(iem, intent_vec, target_full: str, intent_obj: dict | N
         combined *= (length_decay ** (len(edges) - 1))
         best = max(best, combined)
 
+    # If 1-hop timestamp found, apply locality decay flag for transparency
+    debug_meta = {
+        "timestampPriorApplied": False,
+        "timestampPriorValue": 0.0,
+        "localityDecayApplied": False
+    }
+    if raw_paths and len(raw_paths[0]) == 1 and (f.role or {}).get("timestamp", 0.0) > 0.0:
+        ts_prior = float(ps_cfg.get("sameEntityTimestampPrior", 0.0))
+        best = max(best, 0.4 * ts_prior)
+        debug_meta["timestampPriorApplied"] = True
+        debug_meta["timestampPriorValue"] = 0.4 * ts_prior
+        debug_meta["localityDecayApplied"] = True
+        return {
+            "CosineContext": float(cos),
+            "RoleCoherence": role_prob,
+            "PathScore": float(best),
+            "_debug": debug_meta
+        }
+
     return {"CosineContext": float(cos), "RoleCoherence": role_prob, "PathScore": float(best)}
+
+def _is_generic_category(term: str | None) -> bool:
+    """Check if a term is a generic category word."""
+    if not term:
+        return False
+    t = term.lower()
+    return t in {"category", "group", "class", "type", "segment"}
+
+def _package_conflict(slot_name: str, scored: list, chosen_idx: int, why: dict | None = None, rule_override: bool = False):
+    """
+    Build the conflict dict block with per-candidate details. `scored` is a list of dicts containing:
+    - key, score, finalScore, reason, PathScore, CosineContext, RoleCoherence, LocalBonus, weights, (optional) timestampInfo
+    `chosen_idx` is the index in `scored` that we select (may be a rule override).
+    """
+    resolution = scored[chosen_idx]["key"] if scored and chosen_idx < len(scored) else None
+    # Compute transparency fields
+    best_numeric = max((c.get("finalScore", c.get("score", 0.0)) for c in scored), default=0.0)
+    chosen_num = scored[chosen_idx].get("finalScore", scored[chosen_idx].get("score", 0.0)) if scored and chosen_idx < len(scored) else 0.0
+    # If a specific rule was applied (rule_override=True), we mark the decision as ruleOverride, else finalScore.
+    # The presence of preferSameEntityTimestampDelta in why just indicates the threshold is available, not that it was applied.
+    selected_by = "ruleOverride" if rule_override else "finalScore"
+    return {
+        "slot": slot_name,
+        "candidates": [c["key"] for c in scored],
+        "resolution": resolution,
+        "selectedBy": selected_by,
+        "decisionScore": float(chosen_num),
+        "bestNumericScore": float(best_numeric),
+        "why": why or {},
+        "scores": [{"target": s["key"], "score": s["score"], "finalScore": s.get("finalScore", s["score"]), "reason": s.get("reason", "normal"), **s["why"]} for s in scored]
+    }
+
+def _unknown_backoff(slot_name: str, candidates: list, ctx: dict):
+    """
+    Cascade fallback for unknown/ambiguous slot resolution:
+    1) Honor roleTop match if confident (score >= 0.80)
+    2) Emergent tags from principles.json
+    3) Salience within same entity as pivot
+    4) Final: best PathScore
+    """
+    if not candidates:
+        return None
+    
+    # 1) honor roleTop match if confident
+    confident = [c for c in candidates if getattr(c, "roleTop", "") == slot_name and getattr(c, "score", 0.0) >= 0.80]
+    if confident:
+        return confident[0]
+    
+    # 2) emergent tags (status-like) -> we'll plug later through principles.json
+    emergent = ctx.get("emergent", {}).get(slot_name, [])
+    for t in emergent:
+        for c in candidates:
+            if f"{c.entity}.{c.name}" == t:
+                return c
+    
+    # 3) salience within same entity as pivot
+    pivot_entity = None
+    pivot_obj = ctx.get("pivot")
+    if pivot_obj:
+        if hasattr(pivot_obj, "entity"):
+            pivot_entity = pivot_obj.entity
+        elif isinstance(pivot_obj, dict):
+            pivot_entity = pivot_obj.get("entity")
+    
+    if pivot_entity:
+        same = [c for c in candidates if c.entity == pivot_entity]
+        if same:
+            salience_map = ctx.get("salience", {})
+            same = sorted(same, key=lambda x: salience_map.get(f"{x.entity}.{x.name}", 0.0), reverse=True)
+            return same[0]
+    
+    # 4) final: best PathScore
+    path_scores = ctx.get("pathScores", {})
+    return sorted(candidates, key=lambda x: path_scores.get(f"{x.entity}.{x.name}", 0.0), reverse=True)[0]
 
 def resolve_conflicts(
     iem,
@@ -622,7 +982,11 @@ def resolve_conflicts(
     Returns (conflicts[], maybe_new_target_str).
     Each conflict note: {slot, candidates:[...], resolution, why:{...}}
     """
-    cf = _CONFIG["fill"]["conflict"]
+    fill_cfg = _CONFIG.get("fill", {})
+    unknown_backoff = bool(fill_cfg.get("unknownBackoff", False))
+    ask = (intent_obj.get("ask") or "").lower()
+    
+    cf = fill_cfg.get("conflict", {})
     w_path = float(cf.get("pathWeight", 0.5))
     w_cos  = float(cf.get("cosineWeight", 0.35))
     w_role = float(cf.get("roleWeight", 0.15))
@@ -656,24 +1020,87 @@ def resolve_conflicts(
     conflicts = []
     new_target = None
 
+    # Load principles for emergent tags
+    try:
+        from .config import load_principles
+        active_principles = load_principles()
+    except Exception:
+        active_principles = {"emergent": {}}
+
+    # Get salience map from IEM if available
+    salience_map = getattr(iem, "_salience_map", {}) or {}
+
     for role, ent_map in by_role.items():
         if len(ent_map) < 2:
             continue
 
+        # UnknownBackoff for generic category asks
+        slot_name = role
+        if slot_name == "category" and unknown_backoff:
+            requested = (intent_obj.get("target") or "")
+            if _is_generic_category(requested):
+                # filter category-like and status-like
+                catish = []
+                sal_map = _get_salience_map(iem)
+                candidates_for_backoff = []
+                for ent, sf in ent_map.items():
+                    candF = name_map.get((sf.entity, sf.name))
+                    if candF:
+                        roleTop = getattr(sf, "roleTop", None) or _top_role_of_field(candF)
+                        candidates_for_backoff.append((sf, roleTop))
+                
+                for sf, roleTop in candidates_for_backoff:
+                    key = f"{sf.entity}.{sf.name}"
+                    if roleTop in {"category"} or "status" in (sf.name or "").lower():
+                        sc = float(sf.score)
+                        # prefer categorical dims for top_k over "status" (configurable)
+                        prefer_cat = float(fill_cfg.get("conflict", {}).get("preferCategoryForTopK", 0.02))
+                        pref = prefer_cat if (ask == "top_k" and roleTop == "category") else 0.0
+                        sc = sc + pref
+                        # salience tie-break
+                        gamma = float((_CONFIG.get("salience") or {}).get("gamma", 0.0))
+                        sc = sc * (1.0 + gamma * float(sal_map.get(key, 0.0)))
+                        catish.append((sc, sf, key))
+                
+                if catish:
+                    catish.sort(key=lambda z: z[0], reverse=True)
+                    best_sc, best_sf, best_key = catish[0]
+                    # Convert to scored format for _package_conflict (with transparency fields)
+                    scored_format = [{"key": k, "score": sc, "finalScore": sc, "reason": "unknownBackoff", "why": {"unknownBackoff": True}} for sc, _, k in catish]
+                    why_dict = {
+                        "reason": "unknownBackoff",
+                        "ask": ask,
+                        "salApplied": float((_CONFIG.get("salience") or {}).get("gamma", 0.0))
+                    }
+                    # Use _package_conflict for consistency and transparency
+                    conflict = _package_conflict(slot_name, scored_format, 0, why_dict, rule_override=True)
+                    conflicts.append(conflict)
+                    if pivot and getattr(pivot, "roleTop", None) == slot_name and f"{pivot.entity}.{pivot.name}" != best_key:
+                        new_target = best_key
+                    continue  # Skip normal resolution for this slot
+
         scored = []
+        path_scores_local = {}  # local map for pathScores
         for ent, sf in ent_map.items():
             candF = name_map.get((sf.entity, sf.name))
-            path_score = 0.0
-            if metric_entity:
-                if metric_entity == sf.entity:
-                    path_score = min(1.0, 0.15)
-                else:
-                    raw_paths = _bfs_paths(adj, start=metric_entity, goal=sf.entity, max_hops=3)
-                    if raw_paths:
-                        base_ps = _path_score(iem, intent_vec, raw_paths[0])
-                        hops = len(raw_paths[0])
-                        length_prior = (len_base ** max(0, hops - 1))
-                        path_score = max(0.0, base_ps * length_prior)
+            key = f"{sf.entity}.{sf.name}"
+            
+            # Use score_target_context to get proper PathScore (includes sameEntityTimestampPrior)
+            ctx_score = score_target_context(iem, intent_vec, key, intent_obj)
+            path_score = float(ctx_score.get("PathScore", 0.0))
+            # Extract debug metadata if present
+            debug_meta = ctx_score.get("_debug", {})
+            
+            # If no path score from context and metric_entity differs, try path-based scoring
+            if path_score == 0.0 and metric_entity and metric_entity != sf.entity:
+                raw_paths = _bfs_paths(adj, start=metric_entity, goal=sf.entity, max_hops=3)
+                if raw_paths:
+                    base_ps = _path_score(iem, intent_vec, raw_paths[0])
+                    hops = len(raw_paths[0])
+                    length_prior = (len_base ** max(0, hops - 1))
+                    path_score = max(0.0, base_ps * length_prior)
+
+            path_scores_local[key] = path_score
 
             cos1 = _cos(intent_vec, getattr(candF, "vec", []))
             cos2 = _cos(getattr(candF, "vec", []), getattr(money_field, "vec", [])) if money_field else 0.0
@@ -684,29 +1111,101 @@ def resolve_conflicts(
             local_bonus = metric_bonus if metric_entity and sf.entity == metric_entity else 0.0
 
             score = (w_path * max(min_path, path_score)) + (w_cos * cos_ctx) + (w_role * role_coh) + local_bonus
+            why_dict = {
+                "PathScore": float(path_score),
+                "CosineContext": float(cos_ctx),
+                "RoleCoherence": float(role_coh),
+                "LocalBonus": float(local_bonus),
+                "weights": {"path": w_path, "cosine": w_cos, "role": w_role}
+            }
+            if debug_meta:
+                why_dict["timestampInfo"] = debug_meta
             scored.append({
-                "key": f"{sf.entity}.{sf.name}",
+                "key": key,
                 "sf": sf,
                 "score": float(score),
-                "why": {
-                    "PathScore": float(path_score),
-                    "CosineContext": float(cos_ctx),
-                    "RoleCoherence": float(role_coh),
-                    "LocalBonus": float(local_bonus),
-                    "weights": {"path": w_path, "cosine": w_cos, "role": w_role}
-                }
+                "finalScore": float(score),  # Initialize finalScore (may be updated later for rule overrides)
+                "reason": "normal",  # Default reason (may be updated later)
+                "why": why_dict
             })
 
         scored.sort(key=lambda x: x["score"], reverse=True)
         winner = scored[0] if scored else None
+        winner_idx = 0
 
-        conflicts.append({
-            "slot": role,
-            "candidates": [s["key"] for s in scored],
-            "resolution": (winner["key"] if winner else None),
-            "why": (winner["why"] if winner else {}),
-            "scores": [{"target": s["key"], "score": s["score"], **s["why"]} for s in scored]
-        })
+        # Use unknown_backoff cascade if no clear winner or as fallback when scores are too close
+        if not winner or (winner and len(scored) > 1 and scored[0]["score"] - scored[1]["score"] < 0.05):
+            # Convert scored dicts to ScoredField objects for backoff
+            candidates = [s["sf"] for s in scored]
+            ctx = {
+                "pivot": pivot,
+                "salience": salience_map,
+                "pathScores": path_scores_local,
+                "emergent": active_principles.get("emergent", {})
+            }
+            backoff_winner = _unknown_backoff(role, candidates, ctx)
+            if backoff_winner:
+                # Find the corresponding scored entry
+                backoff_key = f"{backoff_winner.entity}.{backoff_winner.name}"
+                winner = next((s for s in scored if s["key"] == backoff_key), winner)
+                if winner:
+                    winner_idx = next((i for i, s in enumerate(scored) if s["key"] == backoff_key), 0)
+
+        # Apply timestamp override if gap is below threshold
+        rule_override_applied = False
+        if role == "timestamp" and pivot and winner and len(scored) > 0:
+            pivot_entity = getattr(pivot, "entity", None) if pivot else None
+            if pivot_entity:
+                # Find orders.created_at (or same-entity timestamp) candidate
+                orders_created_at = None
+                orders_created_at_entity = None
+                for cand in scored:
+                    key = cand["key"]
+                    if "." in key:
+                        ent, field = key.split(".", 1)
+                        if ent == pivot_entity and "created_at" in field:
+                            orders_created_at = cand
+                            orders_created_at_entity = ent
+                            break
+                
+                if orders_created_at:
+                    best = winner
+                    gap = best["score"] - orders_created_at["score"]
+                    th = float(_CONFIG.get("fill", {}).get("conflict", {}).get("preferSameEntityTimestampDelta", 0.02))
+                    if gap < th:
+                        winner = orders_created_at
+                        winner_idx = next((i for i, s in enumerate(scored) if s["key"] == orders_created_at["key"]), 0)
+                        orders_created_at["finalScore"] = orders_created_at["score"] + th
+                        orders_created_at["reason"] = "preferSameEntityTimestamp"
+                        rule_override_applied = True
+                    else:
+                        best["finalScore"] = best["score"]
+                        if "reason" not in best:
+                            best["reason"] = "bestScore"
+
+        # Build why dict with preferSameEntityTimestampDelta if timestamp override was applied
+        why_dict = (winner["why"] if winner else {}).copy()
+        if role == "timestamp" and pivot:
+            th = float(_CONFIG.get("fill", {}).get("conflict", {}).get("preferSameEntityTimestampDelta", 0.02))
+            why_dict["preferSameEntityTimestampDelta"] = th
+        
+        # Guard against empty scored list or invalid winner_idx
+        if not scored or winner_idx >= len(scored):
+            # Edge case - shouldn't happen but be safe
+            conflicts.append({
+                "slot": role,
+                "candidates": [],
+                "resolution": None,
+                "selectedBy": "none",
+                "decisionScore": 0.0,
+                "bestNumericScore": 0.0,
+                "why": why_dict or {},
+                "scores": []
+            })
+        else:
+            # Package conflict with transparency fields
+            conflict = _package_conflict(role, scored, winner_idx, why_dict, rule_override_applied)
+            conflicts.append(conflict)
 
         if pivot and getattr(pivot, "roleTop", None) == role and winner and f"{pivot.entity}.{pivot.name}" != winner["key"]:
             new_target = winner["key"]
