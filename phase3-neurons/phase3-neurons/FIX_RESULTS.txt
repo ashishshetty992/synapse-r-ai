@@ -1,0 +1,30 @@
+=== Fix Results ===
+
+1. Stopword Guard for Fuzzy Corrections
+2. Aplus/Abase Clamping
+
+
+=== Test 1: Fuzzy Stopword Guard ===
+[
+  {
+    "from": "categories",
+    "to": "category",
+    "why": "fuzzy"
+  }
+]
+
+=== Test 2: Aplus Clamp ===
+{
+  "Abase": 1.0,
+  "Coverage": 1.0,
+  "OffSchemaRate": 0.0,
+  "Aplus": 1.0
+}
+
+=== Summary ===
+✓ Stopword guard implemented: 'in' is no longer corrected to 'id'
+✓ Only valid corrections remain (e.g., 'categories' → 'category')
+✓ Aplus clamped to ≤ 1.0 (was 1.035, now 1.0)
+✓ Abase clamped to ≤ 1.0 (now 1.0)
+✓ Coverage clamped to ≤ 1.0 (now 1.0)
+✓ OSR clamped to ≤ 1.0 (now 0.0)

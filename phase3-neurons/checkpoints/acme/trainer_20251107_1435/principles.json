@@ -1,0 +1,7 @@
+{
+  "enabled": {
+    "unknownBackoff": true,
+    "hubPenalty": true
+  },
+  "notes": "auto-toggle v1"
+}

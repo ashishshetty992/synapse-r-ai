@@ -1,0 +1,24 @@
+{
+  "top1_acc": 0.4,
+  "mrr": 0.5291666666666666,
+  "slot_f1": 0.0,
+  "aplus_mean": 0.5945961984865296,
+  "pathscore_mean": 0.05398833050427382,
+  "n_golden": 10,
+  "n_feedback": 46,
+  "snapshot": {
+    "pathScoring": {
+      "idPrior": 0.1,
+      "fkBonus": 0.05,
+      "lengthPriorBase": 0.92,
+      "cosineWeight": 0.75,
+      "pkToFkBonus": 0.0,
+      "fkToPkBonus": 0.0,
+      "bridgePenalty": 0.0,
+      "hubPenalty": 0.12,
+      "hubDegreeThreshold": 8,
+      "fanoutPenalty": 0.0,
+      "sameEntityTimestampPrior": 0.15
+    }
+  }
+}

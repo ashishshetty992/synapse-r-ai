@@ -1,0 +1,40 @@
+{
+  "weights": {
+    "alias_alpha": 0.4,
+    "shape_alpha": 0.14,
+    "shape_beta": 0.1,
+    "metric_alpha": 0.1,
+    "role_alpha_default": 0.1
+  },
+  "pathScoring": {
+    "idPrior": 0.12,
+    "fkBonus": 0.06,
+    "lengthPriorBase": 0.94,
+    "cosineWeight": 0.75
+  },
+  "alignPlus": {
+    "osrZeroWhenNoText": true
+  },
+  "fill": {
+    "unknownPenalty": 0.1,
+    "maxUnknownInTopK": 1,
+    "preferBonus": 0.08,
+    "moneyPivotPenalty": 0.08,
+    "osrFromIntentOnly": true,
+    "conflict": {
+      "pathWeight": 0.55,
+      "cosineWeight": 0.3,
+      "roleWeight": 0.15,
+      "minPathScore": 0.02,
+      "lengthPriorBase": 0.92,
+      "preferMetricEntityBonus": 0.03
+    }
+  },
+  "logging": {
+    "decisionsEnabled": true,
+    "path": "./logs/decisions.jsonl.gz"
+  },
+  "salience": {
+    "gamma": 0.1
+  }
+}

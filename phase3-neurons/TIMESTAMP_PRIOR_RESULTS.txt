@@ -1,0 +1,77 @@
+=== Timestamp Prior Implementation & Verification ===
+
+
+=== Test 1: Activate Checkpoint ===
+{
+    "ok": true,
+    "active": {
+        "checkpoint": "acme/trainer_20251106_2344",
+        "shaping": "/Users/shipyaari/other-projects/codemonklab/synapse-r-phase1/phase3-neurons/checkpoints/acme/trainer_20251106_2344/shaping.json",
+        "fewshot": "/Users/shipyaari/other-projects/codemonklab/synapse-r-phase1/phase3-neurons/checkpoints/acme/trainer_20251106_2344/fewshot.json"
+    },
+    "requestId": "d8790d42-ae6f-41ad-9e87-907301bafd2d"
+}
+
+=== Test 2: Verify pathScoring in /synapse/match ===
+{
+  "idPrior": 0.1,
+  "fkBonus": 0.05,
+  "lengthPriorBase": 0.92,
+  "cosineWeight": 0.75,
+  "pkToFkBonus": 0.0,
+  "fkToPkBonus": 0.0,
+  "bridgePenalty": 0.0,
+  "hubPenalty": 0.12,
+  "hubDegreeThreshold": 8.0,
+  "fanoutPenalty": 0.0,
+  "sameEntityTimestampPrior": 0.0,
+  "_source": "active"
+}
+
+=== Test 3: Verify timestamp PathScore in /synapse/fill ===
+{}
+
+=== Test 4: Run Trainer and Check Snapshot ===
+{
+  "ckpt": "acme/trainer_20251107_1411",
+  "metrics": {
+    "top1_acc": 0.4,
+    "mrr": 0.5291666666666666,
+    "pathscore_mean": 0.05398833050427382,
+    "snapshot": {
+      "idPrior": 0.1,
+      "fkBonus": 0.05,
+      "lengthPriorBase": 0.92,
+      "cosineWeight": 0.75,
+      "pkToFkBonus": 0.0,
+      "fkToPkBonus": 0.0,
+      "bridgePenalty": 0.0,
+      "hubPenalty": 0.12,
+      "hubDegreeThreshold": 8,
+      "fanoutPenalty": 0.0
+    }
+  }
+}
+
+=== Test 5: Check /trainer/last_eval includes snapshot ===
+{
+  "mrr": null,
+  "pathscore_mean": null,
+  "snapshot": {}
+}
+
+
+=== Summary ===
+✓ Added sameEntityTimestampPrior to _DEFAULT_CONFIG (0.02)
+✓ Updated score_target_context to use role-based check (timestamp role > 0.0)
+✓ Added _debug_path_scoring_source() helper function
+✓ Updated /synapse/match to use debug helper
+✓ Updated /synapse/fill to use debug helper
+✓ Updated compute_metrics_for_tenant to include snapshot
+✓ Updated /trainer/last_eval to expose snapshot
+✓ Updated shaping.json with sameEntityTimestampPrior=0.15
+
+NOTE: Service needs restart to pick up config changes. After restart:
+- /synapse/match should show sameEntityTimestampPrior: 0.15
+- /synapse/fill timestamp conflicts should show PathScore reflecting the prior
+- /trainer/run snapshot should include sameEntityTimestampPrior
