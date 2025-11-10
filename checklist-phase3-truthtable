@@ -1,0 +1,776 @@
+Phase-3 Production Checklist (Verified)
+
+Priority Legend:
+P0 = Critical/Blocking (must have for production deployment)
+P1 = High (important for production readiness)
+P2 = Medium (should have, but not blocking)
+P3 = Low (nice to have, can be deferred)
+
+0) Ground truth & success criteria — ✅
+North star + exit metrics defined.
+
+1) Neurons service & contracts — 🟨
+FastAPI, auth, rate-limits, structured JSON logs exist. Hardening (strict validators, richer request-id logs) pending.
+Production gaps:
+	•	Strict request validation (Pydantic models with strict=True) — 🟨 [P1]
+	•	Request ID correlation in all downstream calls — 🟨 [P1]
+	•	API versioning strategy — ⛔ [P2]
+	•	OpenAPI/Swagger documentation completeness — 🟨 [P2]
+
+2) Neuron-1: Schema understanding (IEM) — ✅
+IEM build, deterministic outputs, role priors/RoleBoost, drift detection, /iem/verify with clustering & drift stats.
+Entity-level embeddings — ✅
+/iem/show endpoint — ✅
+Salience computation (entity centrality + constraint weight + glossary confidence) — ✅
+Role prior vector computation — ✅
+Production gaps:
+	•	IEM versioning and migration strategy — ⛔ [P1]
+	•	IEM backup/restore mechanism — ⛔ [P1]
+	•	IEM build performance optimization for large schemas — 🟨 [P2]
+
+3) Neuron-2: Intent encoder (NL + IQL) — 🟨
+Encoder + SynoMix(BM25⊕cosine) working; synonyms.json loaded.
+/intent/encode (IQL → vector) — ✅
+/intent/encode_nl (NL text → vector with synonyms) — ✅
+Time config integration (tenant-level time grammar) — ✅
+Top alias hits debug output — ✅
+Few-shot aliases not merged into encode_nl runtime — 🟨
+Few-shot hints not applied in matching runtime — 🟨
+Production gaps:
+	•	Synonym cache invalidation strategy — 🟨 [P2]
+	•	Multi-language support (beyond English) — ⛔ [P3]
+	•	Encoding performance benchmarks — 🟨 [P2]
+
+4) Neuron-3: Synapse matching — ✅
+Cosine ranking, conflict resolver, multi-hop paths, AlignPlus, PathScore.
+Recent adds: SalienceScore, UnknownBackoff, hub penalty toggle, timestamp prior (same-entity + locality), conflict transparency (selectedBy, decisionScore, bestNumericScore top-level; finalScore/reason per-candidate), canonical last_eval feed-through in debug.
+Conflict transparency (finalScore/reason not top-level) — 🟨
+/synapse/paths with edge breakdowns, normalized scores, guardrails — ✅
+/synapse/fill with AlignPlus computation — ✅
+/synapse/explain endpoint — ✅
+LTR (Learning to Rank) re-ranking for paths (x-ltr header, NEURONS_LTR_DEFAULT env) — ✅
+Path features extraction (x-features header: hubSteps, fanoutSteps, bridges, pkToFkSteps, fkToPkSteps) — ✅
+Path component breakdowns (avgCos, avgPrior, rawBlend, lengthPrior, final) — ✅
+Entity blend (entityWeight/fieldWeight/entityAliasAlpha) — ✅
+Salience scoring with gamma configurable — ✅
+Production gaps:
+	•	Match result caching strategy — ⛔ [P2]
+	•	Match timeout handling — 🟨 [P1]
+	•	Match result size limits — 🟨 [P1]
+
+5) Neuron-4: Auto-question generator (PoC) — ✅
+/generate produces IQLs, coverage + validator wired.
+/examples/coverage endpoint — ✅
+Production gaps:
+	•	Generation rate limiting per tenant — 🟨 [P2]
+	•	Generated query quality metrics — 🟨 [P2]
+
+Neuron-5: Learn/Train/Eval loop
+	•	Feedback store, golden sets, trainer grid search, metrics, checkpoints — ✅
+	•	Canonical last_eval.json (tenant-level) + /trainer/last_eval — ✅
+	•	Activate checkpoint + versions — ✅
+	•	Rollback endpoint — ⛔ [P0] (CRITICAL: needed for production safety)
+	•	Few-shot runtime booster (apply hints/aliases in encoder/matcher) — 🟨 [P1] (loaded/displayed, not applied)
+Production gaps:
+	•	Trainer job queue and async execution — ⛔ [P2]
+	•	Trainer resource limits (CPU/memory) — ⛔ [P1]
+	•	Trainer failure recovery — ⛔ [P1]
+	•	Checkpoint retention policy — ⛔ [P1]
+	•	Trainer metrics dashboard — ⛔ [P2]
+
+Public APIs (new) — 🟨
+/feedback/record, /trainer/run, /trainer/activate, /trainer/versions, /trainer/last_eval, /fewshot/show — ✅
+/trainer/rollback — ⛔ [P0] (CRITICAL)
+/golden/list, /golden/add — ✅
+/eval/last_eval (active checkpoint reader) — ✅
+/config/effective (runtime config viewer) — ✅
+/config/knobs (GET/POST for runtime tuning) — ✅
+/principles/show — ✅
+/debug/runtime (active checkpoint + synapse config) — ✅
+/debug/graph (schema graph stats: degrees, hubs, fanout) — ✅
+/metrics (Prometheus metrics endpoint) — ✅
+/healthz (health check) — ✅
+/intent/encode (IQL → vector) — ✅
+/iem/verify (drift detection, clustering stats) — ✅
+/iem/show (schema display) — ✅
+/synapse/match (field/entity matching) — ✅
+/synapse/paths (join path inference) — ✅
+/synapse/fill (slot filling + conflict resolution) — ✅
+/synapse/explain (decision explanation) — ✅
+/generate (AIQL example generation) — ✅
+/examples/coverage (coverage stats) — ✅
+Request headers support:
+	•	x-request-id (request correlation) — ✅
+	•	x-tenant-id (tenant identification) — ✅
+	•	x-api-key (authentication) — ✅
+	•	x-experiment (baseline-only, train-shadow) — ✅
+	•	x-ltr (LTR re-ranking toggle) — ✅
+	•	x-features (path features extraction) — ✅
+Production gaps:
+	•	API deprecation policy — ⛔ [P3]
+	•	API rate limiting per endpoint — 🟨 [P1]
+	•	API response compression — ⛔ [P2]
+	•	API request/response validation middleware — 🟨 [P1]
+	•	/readyz endpoint (readiness check) — 🟨 [P1] (exists in Phase-2, not documented for neurons)
+	•	/iem/entities endpoint (entity-level embeddings API) — 🟨 [P3] (exists but not exposed)
+	•	API endpoint request/response examples — ⛔ [P2]
+	•	Error code reference documentation — ⛔ [P2]
+
+Config & files — 🟨
+shaping.json, fewshot.json, runtime/active.json all present.
+Gap: few-shot not merged into encode/match runtime.
+Active config merging (load_active_config_merged) — ✅
+Baseline config reset per request — ✅
+Glossary support (config/global/glossary.json for salience computation) — ✅
+Time config support (tenant-level time grammar) — ✅
+Decision logging (structured decision.jsonl) — ✅
+Principles support (runtime/principles.json) — ✅
+Config file structure:
+	•	config/global/shaping.json — ✅
+	•	config/global/entity.json — ✅
+	•	config/global/role.json — ✅
+	•	config/global/time.json — ✅
+	•	config/global/glossary.json — ✅
+	•	config/tenant/<id>/shaping.json — ✅
+	•	config/tenant/<id>/entity.json — ✅
+	•	config/tenant/<id>/role.json — ✅
+	•	config/tenant/<id>/time.json — ✅
+	•	runtime/active.json (active checkpoint pointer) — ✅
+	•	runtime/principles.json — ✅
+	•	synonyms.json — ✅
+Production gaps:
+	•	Config validation on load — 🟨 [P1]
+	•	Config schema versioning — ⛔ [P2]
+	•	Config rollback on validation failure — ⛔ [P1]
+	•	Config change audit log — ⛔ [P2]
+	•	Configuration file schema documentation — ⛔ [P2]
+	•	Config file validation on startup — 🟨 [P1]
+
+Observability — ✅
+Prom metrics, structured logs, trainer lifecycle logs.
+Request ID propagation (x-request-id header) — ✅
+Structured JSON logging (log_json helper) — ✅
+Decision logging (decision.jsonl with event tracking) — ✅
+Config hot-reload support (CFG_HOT env) — ✅
+Rate limiting with headers (x-ratelimit-*) — ✅
+Prometheus metrics exposed:
+	•	synapse_trainer_runs_total — ✅
+	•	synapse_trainer_top1_acc{tenant} — ✅
+	•	synapse_trainer_mrr{tenant} — ✅
+	•	synapse_feedback_rows_total — ✅
+	•	synapse_golden_rows_total{tenant} — ✅
+Production gaps:
+	•	Distributed tracing (OpenTelemetry/Jaeger) — ⛔ [P2]
+	•	Log aggregation (ELK/CloudWatch) — ⛔ [P1]
+	•	Alerting rules (Prometheus AlertManager) — ⛔ [P1]
+	•	Alert thresholds and rules definition — ⛔ [P1]
+	•	Performance profiling endpoints — ⛔ [P2]
+	•	Error tracking (Sentry/DataDog) — ⛔ [P1]
+	•	Metrics dashboard (Grafana) — ⛔ [P1]
+	•	Log retention policies — ⛔ [P1]
+	•	Metrics aggregation strategy — ⛔ [P2]
+	•	Dashboard requirements documentation — ⛔ [P2]
+
+Guardrails — ✅
+Param clamps, PII filter in feedback, tenant isolation, index safety in planner side (baseline).
+Path scoring override clamps (idPrior, fkBonus, cosineWeight, etc.) — ✅
+Body size limits (NEURONS_MAX_BODY env) — ✅
+Trust proxy support (NEURONS_TRUST_PROXY env) — ✅
+Output base path restrictions (NEURONS_OUT_BASE) — ✅
+Production gaps:
+	•	SQL injection prevention (parameterized queries verified) — 🟨 [P0]
+	•	NoSQL injection prevention — 🟨 [P0]
+	•	Input sanitization for all user inputs — 🟨 [P0]
+	•	Request timeout enforcement — 🟨 [P1]
+	•	Circuit breakers for external dependencies — ⛔ [P1]
+	•	Graceful degradation on errors — 🟨 [P1]
+
+Rollout plan — 🟨
+1–3 (feedback/eval/trainer) done.
+4) Shadow/AB headers & rollback — rollback ⛔, shadow mode ✅ (TRAINER_SHADOW_ONLY env, x-experiment: train-shadow header)
+5–6) Tenant canaries & wider rollout switches — ✅ (TRAINER_TENANT_CANARY env, x-experiment header support)
+Experiment headers: x-experiment (baseline-only, train-shadow) — ✅
+Production gaps:
+	•	Feature flags service integration — ⛔ [P2]
+	•	Gradual rollout percentage controls — ⛔ [P2]
+	•	Automatic rollback on error rate threshold — ⛔ [P1]
+	•	Canary analysis dashboard — ⛔ [P2]
+
+Planner integration (A/C/P/S/R) — 🟨/⛔
+	•	A(p)=AlignPlus computed in neurons, not fully surfaced in planner trace — 🟨
+	•	C(p)=CostPlus (index/complexity hints) — ⛔
+	•	P(p)=GroupInfo (parsimony vs informativeness) — ⛔
+	•	S(p)=AliasStability computed in /iem/verify, not used in planner — 🟨
+	•	R(p)=Parity/RBAC — ⛔
+	•	Boltzmann exploration (τ) in beam selection — ✅
+	•	Trace should show {A,C,P,S,R,τ,final} — 🟨
+Production gaps:
+	•	Planner performance profiling — 🟨 [P2]
+	•	Planner query plan caching — ⛔ [P2]
+	•	Planner cost model calibration — ⛔ [P2]
+
+Schema graph & multi-join — 🟨
+In-memory graph + path search + PathScore ranking — ✅
+Graph.json persistence — ⛔ [P0] (CRITICAL: needed for graph versioning and recovery)
+Path disambiguation using A⁺/C/S blend — 🟨
+Degree index computation (build_degree_index) — ✅
+Hub detection & penalties (hubDegreeThreshold, hubPenalty) — ✅
+Fanout penalties (fanoutPenalty) — ✅
+Bridge detection & penalties (bridgePenalty) — ✅
+Direction-aware bonuses (pkToFkBonus, fkToPkBonus) — ✅
+Production gaps:
+	•	Graph build performance for large schemas — 🟨 [P2]
+	•	Graph consistency validation — 🟨 [P1]
+	•	Graph incremental updates — ⛔ [P2]
+
+Multi-groupBy & complex shapes — 🟨
+Singles/duals OK. Triple groupBy, compare×extra-dims not in suite — 🟨. Windows deferred.
+Production gaps:
+	•	Complex query performance testing — 🟨 [P2]
+	•	Query result size limits — 🟨 [P1]
+	•	Query timeout handling — 🟨 [P1]
+
+Integration with Phase-2 runtime — 🟨
+E2E proven; feature-flag USE_NEURONS and fallback policy (low neuronScore → rule planner) not fully plumbed; trace missing A/C/P/S/R — 🟨.
+Phase-2 HTTP service integration — ✅
+Database adapter integration (MySQL, MongoDB) — ✅
+UEM/IEM loading integration — ✅
+Production gaps:
+	•	Integration test suite — 🟨 [P1]
+	•	End-to-end performance benchmarks — 🟨 [P2]
+	•	Fallback strategy documentation — 🟨 [P1]
+	•	Cross-service communication patterns — 🟨 [P2]
+	•	Feature flag USE_NEURONS end-to-end wiring — 🟨 [P1]
+	•	Fallback policy implementation (low neuronScore → rule planner) — ⛔ [P1]
+
+Parity, index safety & policy — 🟨
+Parity endpoint works; index guard on. Cost/Parity into planner scoring + RBAC penalties — ⛔/🟨.
+Production gaps:
+	•	Parity test automation — 🟨 [P1]
+	•	RBAC policy enforcement — ⛔ [P1]
+	•	Index safety validation in production — 🟨 [P0]
+
+Tests & tooling — ⛔
+Phase-3 runner (run-phase3-tests.sh) — ⛔ [P0] (CRITICAL: needed for CI/CD)
+Make/NPM trainer commands (feedback-demo, trainer-run, trainer-activate) — ✅ (exists in Makefile)
+Make commands available:
+	•	make health — ✅
+	•	make iem — ✅
+	•	make golden-list — ✅
+	•	make train — ✅
+	•	make activate CKPT=... — ✅
+	•	make last-eval — ✅
+	•	make fewshot — ✅
+	•	make shadow-match — ✅
+	•	make feedback-demo — ✅
+	•	make generate-aiql — ✅
+	•	make validate-aiql — ✅
+Production gaps:
+	•	Unit test coverage (>80%) — ⛔ [P0]
+	•	Unit test structure and coverage targets — ⛔ [P1]
+	•	Integration test suite — ⛔ [P0]
+	•	Integration test scenarios documentation — ⛔ [P1]
+	•	Load testing suite — ⛔ [P1]
+	•	Chaos engineering tests — ⛔ [P2]
+	•	Test data management — ⛔ [P1]
+	•	Test data management strategy — ⛔ [P1]
+	•	Mock/stub services for testing — ⛔ [P2]
+	•	CI/CD pipeline — ⛔ [P0]
+	•	Performance benchmark baselines — ⛔ [P2]
+	•	Regression test suite — ⛔ [P1]
+
+Docs — 🟨/⛔
+Phase-3 test report (COMPREHENSIVE_TEST_RESULTS.txt) — ✅
+README with wiring guide — 🟨
+README.md (phase3-neurons/README.md) — ✅
+ENV_VARS.md (environment variables documentation) — ✅
+ENV_EXAMPLE.txt (environment variables template) — ✅
+Whitepaper appendix (A/C/P/S/R examples) — ⛔
+Production gaps:
+	•	API documentation (OpenAPI spec) — 🟨 [P1]
+	•	API endpoint request/response examples — ⛔ [P2]
+	•	Error code reference — ⛔ [P2]
+	•	Architecture diagrams — ⛔ [P2]
+	•	Deployment guide — ⛔ [P0]
+	•	Operations runbook — ⛔ [P0]
+	•	Troubleshooting guide — ⛔ [P1]
+	•	Performance tuning guide — ⛔ [P2]
+	•	Configuration file schema documentation — ⛔ [P2]
+	•	Migration guide from Phase-2 to Phase-3 — ⛔ [P2]
+	•	Developer onboarding guide — ⛔ [P2]
+	•	Local development setup guide — ⛔ [P2]
+	•	Debugging tools and techniques — ⛔ [P2]
+	•	Development environment requirements — ⛔ [P2]
+
+Database & Infrastructure — 🟨
+MySQL adapter with connection pooling — ✅
+MongoDB adapter with connection management — ✅
+Health checks (/healthz, /readyz) — ✅
+UEM/IEM loading and caching strategy — ✅
+Database adapter initialization sequence — ✅
+Production gaps:
+	•	Database connection pool tuning — 🟨 [P1]
+	•	Database failover handling — ⛔ [P0]
+	•	Database read replicas support — ⛔ [P2]
+	•	Database backup/restore procedures — ⛔ [P0]
+	•	Database migration strategy — ⛔ [P1]
+	•	Connection retry logic with exponential backoff — 🟨 [P1]
+	•	Database query timeout enforcement — 🟨 [P1]
+	•	Database connection health monitoring — 🟨 [P1]
+	•	Startup sequence and initialization order documentation — ⛔ [P2]
+	•	Graceful shutdown handling — 🟨 [P1]
+	•	Memory management and resource cleanup — 🟨 [P1]
+	•	Thread safety for concurrent requests — 🟨 [P0]
+	•	Service discovery and registration — ⛔ [P2]
+	•	Load balancer health check configuration — ⛔ [P1]
+
+Tenant Management — 🟨
+Tenant configuration structure exists — ✅
+Tenant isolation in checkpoints — ✅
+Tenant canary support — ✅
+Production gaps:
+	•	10 business-like tenants per database type — ⛔ [P0] (CRITICAL: only 2 tenants exist)
+	•	Tenant onboarding automation — ⛔ [P2]
+	•	Tenant configuration validation — 🟨 [P1]
+	•	Tenant usage analytics — ⛔ [P2]
+	•	Tenant quota management — ⛔ [P2]
+	•	Tenant data isolation verification — 🟨 [P0]
+
+Security — 🟨
+API key authentication (NEURONS_API_KEY env) — ✅
+Rate limiting (NEURONS_RL_MAX, NEURONS_RL_WINDOW env) — ✅
+PII filtering — ✅
+CORS configuration — ✅
+Production gaps:
+	•	OAuth2/JWT authentication — ⛔ [P2]
+	•	Role-based access control (RBAC) — ⛔ [P1]
+	•	Audit logging for sensitive operations — ⛔ [P1]
+	•	Secrets management (Vault/AWS Secrets Manager) — ⛔ [P1]
+	•	Encryption at rest — ⛔ [P1]
+	•	Encryption in transit (TLS) — 🟨 [P0]
+	•	Security scanning (SAST/DAST) — ⛔ [P1]
+	•	Vulnerability management — ⛔ [P1]
+	•	API key rotation strategy — ⛔ [P1]
+	•	Rate limiting per endpoint (not just global) — 🟨 [P1]
+	•	Input validation rules documentation — 🟨 [P1]
+	•	Output sanitization verification — 🟨 [P0]
+
+Deployment & Operations — ⛔
+Docker containerization — 🟨 (docker-compose exists for DBs, not for service)
+Docker compose for databases (ops/docker-compose.yml) — ✅
+Kubernetes manifests — ⛔
+Helm charts — ⛔
+Production gaps:
+	•	Container image registry — ⛔ [P1]
+	•	Blue-green deployment strategy — ⛔ [P2]
+	•	Rolling update strategy — ⛔ [P1]
+	•	Health check probes (liveness/readiness) — 🟨 [P1]
+	•	Resource limits (CPU/memory) — ⛔ [P1]
+	•	Horizontal scaling configuration — ⛔ [P1]
+	•	Service mesh integration (Istio/Linkerd) — ⛔ [P2]
+	•	Disaster recovery plan — ⛔ [P0]
+	•	Backup and restore procedures — ⛔ [P0]
+	•	Incident response playbook — ⛔ [P0]
+	•	Change management process — ⛔ [P1]
+	•	Incident escalation procedures — ⛔ [P1]
+	•	API gateway integration requirements — ⛔ [P2]
+
+Performance & Scalability — 🟨
+Request rate limiting — ✅
+Production gaps:
+	•	Response caching strategy — ⛔ [P2]
+	•	Database query result caching — ⛔ [P2]
+	•	Horizontal scaling testing — ⛔ [P1]
+	•	Load balancing configuration — ⛔ [P1]
+	•	CDN integration for static assets — ⛔ [P3]
+	•	Performance SLA definitions — ⛔ [P1]
+	•	Performance regression testing — ⛔ [P2]
+	•	Caching strategies (beyond basic mentions) — ⛔ [P2]
+	•	Query optimization hints — 🟨 [P2]
+	•	Resource pooling configuration — 🟨 [P1]
+	•	Async processing capabilities — 🟨 [P2]
+	•	Batch operation support — ⛔ [P3]
+
+Data Management — 🟨
+Feedback storage (data/feedback.jsonl) — ✅
+Golden set storage (golden/<tenant>/) — ✅
+Checkpoint storage (checkpoints/<tenant>/<checkpoint>/) — ✅
+Production gaps:
+	•	Data retention policies — ⛔ [P1]
+	•	Data retention policies per tenant — ⛔ [P1]
+	•	Data archival strategy — ⛔ [P2]
+	•	Data privacy compliance (GDPR/CCPA) — ⛔ [P1]
+	•	Data export functionality — ⛔ [P2]
+	•	Data backup automation — ⛔ [P0]
+	•	Data backup procedures for checkpoints — ⛔ [P0]
+	•	Data restore procedures — ⛔ [P0]
+
+⸻
+
+Environment Variables & Configuration — 🟨
+Documented in ENV_VARS.md and ENV_EXAMPLE.txt — ✅
+Security & Rate Limiting:
+	•	NEURONS_API_KEY — ✅
+	•	NEURONS_RL_MAX — ✅
+	•	NEURONS_RL_WINDOW — ✅
+Request Limits:
+	•	NEURONS_MAX_BODY — ✅
+Output & Configuration:
+	•	NEURONS_OUT_BASE — ✅
+	•	NEURONS_TRUST_PROXY — ✅
+	•	NEURONS_CFG_ROOT — ✅
+	•	NEURONS_SYNONYMS — ✅
+	•	NEURONS_CFG_HOT — ✅
+Paths:
+	•	UEM_PATH — ✅
+	•	IEM_PATH — ✅
+Optional Features:
+	•	NEURONS_ROLE_CFG — ✅
+	•	NEURONS_SHAPING_CFG — ✅
+Trainer & Canary:
+	•	TRAINER_SHADOW_ONLY — ✅
+	•	TRAINER_TENANT_CANARY — ✅
+Production gaps:
+	•	NEURONS_LTR_DEFAULT — 🟨 [P3] (exists in code, not in ENV_VARS.md)
+	•	NEURONS_DEBUG_BOOT — 🟨 [P3] (exists in code, not documented)
+	•	Environment variable validation on startup — 🟨 [P2]
+	•	Environment variable documentation completeness — 🟨 [P2]
+
+⸻
+
+Formula Lab (F1-F8) — 🟨
+F1 RoleBoost™ (role-aware vector computation) — ✅
+F2 AliasStability™ (drift guard, feeds S(p)) — ✅
+F3 AlignPlus™ (coverage-aware A(p)) — ✅
+F4 PathScore™ (multi-join chooser) — ✅
+F5 GroupInfo™ (parsimony vs informativeness, feeds P(p)) — ⛔
+F6 SynoMix™ (BM25 alias score ⊕ cosine blend) — ✅
+F7 ParityTau™ (Kendall τ from sampled parity, feeds R(p)) — ⛔
+F8 CostPlus™ (index/complexity hints, feeds C(p)) — ⛔
+Production gaps:
+	•	Formula documentation and examples — ⛔ [P2]
+	•	Formula weight sensitivity analysis — ⛔ [P2]
+	•	Formula tuning guidelines — ⛔ [P2]
+
+⸻
+
+Code Quality & Maintainability — 🟨
+Code structure and organization — ✅
+Production gaps:
+	•	Code review requirements — ⛔ [P1]
+	•	Documentation standards — ⛔ [P2]
+	•	Code style guidelines — ⛔ [P2]
+	•	Dependency management strategy — 🟨 [P1]
+	•	Version pinning requirements — 🟨 [P1]
+	•	Hot reload capabilities — ✅ [P2] (CFG_HOT env)
+
+⸻
+
+Compliance & Governance — ⛔
+Production gaps:
+	•	Data retention policies per tenant — ⛔ [P1]
+	•	Audit log requirements — ⛔ [P1]
+	•	Compliance reporting — ⛔ [P2]
+	•	Data export capabilities — ⛔ [P2]
+	•	Privacy policy implementation — ⛔ [P1]
+	•	Audit logging for sensitive operations — ⛔ [P1]
+
+⸻
+
+6) Neuron-6: Curiosity & Insight Engine — ⛔
+Autonomous question generation & insight discovery — ⛔
+Schema-driven, anomaly, pattern, coverage generators — ⛔
+Utility scoring U(p) = f(A,C,P,S,R,Novelty,InfoGain) — ⛔
+/curiosity/feed endpoint — ⛔
+/curiosity/feedback API — ⛔
+Learning loop (feedback → trainer) — ⛔
+Safety guardrails (cost, PII, parity) — ⛔
+
+⸻
+
+TENANT CONFIGURATION REQUIREMENTS (CRITICAL)
+
+Current state: Only 2 tenants exist (acme, shipyaari)
+Required: 10 business-like tenants per database type (MySQL and MongoDB)
+
+Tenant naming convention: <business_name>-<db_type>
+Example: acme-mysql, acme-mongodb
+
+Recommended tenant businesses (can be same business for different DB types):
+1. acme (e-commerce) — MySQL ✅, MongoDB ✅
+2. globex (logistics/supply chain) — MySQL ⛔, MongoDB ⛔
+3. soylent (food delivery) — MySQL ⛔, MongoDB ⛔
+4. initech (SaaS/enterprise) — MySQL ⛔, MongoDB ⛔
+5. umbrella (healthcare) — MySQL ⛔, MongoDB ⛔
+6. hooli (tech/SaaS) — MySQL ⛔, MongoDB ⛔
+7. vehement (finance/fintech) — MySQL ⛔, MongoDB ⛔
+8. techcorp (manufacturing) — MySQL ⛔, MongoDB ⛔
+9. retailmax (retail) — MySQL ⛔, MongoDB ⛔
+10. medisys (healthcare IT) — MySQL ⛔, MongoDB ⛔
+
+Each tenant needs:
+	•	config/tenant/<tenant-id>/entity.json
+	•	config/tenant/<tenant-id>/role.json
+	•	config/tenant/<tenant-id>/shaping.json
+	•	config/tenant/<tenant-id>/time.json
+	•	checkpoints/<tenant-id>/ directory structure
+	•	golden/<tenant-id>/ directory structure
+	•	Test data seeded in respective databases
+
+⸻
+
+Quick "what matters next" (production priorities)
+	1.	Rollback endpoint — safety to experiment. (⛔→✅) [P0] [CRITICAL]
+	2.	Graph persistence — needed for graph versioning and recovery. (⛔→✅) [P0] [CRITICAL]
+	3.	Phase-3 runner (run-phase3-tests.sh) — reproducible eval + CI/CD. (⛔→✅) [P0] [CRITICAL]
+	4.	10 tenants per DB type — production readiness. (⛔→✅) [P0] [CRITICAL]
+	5.	Unit test coverage >80% — code quality. (⛔→✅) [P0] [CRITICAL]
+	6.	Integration test suite — test coverage. (⛔→✅) [P0] [CRITICAL]
+	7.	CI/CD pipeline — deployment automation. (⛔→✅) [P0] [CRITICAL]
+	8.	Database failover & connection retry — reliability. (⛔→✅) [P0] [CRITICAL]
+	9.	Data backup automation — data safety. (⛔→✅) [P0] [CRITICAL]
+	10.	Disaster recovery plan — operational readiness. (⛔→✅) [P0] [CRITICAL]
+	11.	Thread safety verification — concurrent request safety. (🟨→✅) [P0] [CRITICAL]
+	12.	SQL/NoSQL injection prevention — security. (🟨→✅) [P0] [CRITICAL]
+	13.	Output sanitization verification — security. (🟨→✅) [P0] [CRITICAL]
+	14.	Index safety validation — query safety. (🟨→✅) [P0] [CRITICAL]
+	15.	Tenant data isolation verification — multi-tenant safety. (🟨→✅) [P0] [CRITICAL]
+	16.	Wire few-shot into runtime (encode_nl + match) — unlocks tenant-level adaptation. (🟨→✅) [P1]
+	17.	Planner scoring/trace with A/C/P/S/R — even stubbed C/P/R gives visibility now. (🟨→✅) [P1]
+	18.	Path disambiguation using A⁺/C/S — reduces brittle joins. (🟨→✅) [P1]
+	19.	Deployment guide — operational documentation. (⛔→✅) [P0] [CRITICAL]
+	20.	Operations runbook — operational documentation. (⛔→✅) [P0] [CRITICAL]
+
+⸻
+
+Legend:
+✅ = Complete and verified
+🟨 = Partial/needs work
+⛔ = Not implemented
+[CRITICAL] = Blocking production deployment
+
+⸻
+
+PRIORITY ROADMAP TABLE
+
+Priority Levels:
+[P0] = Critical/Blocking (must have for production deployment)
+[P1] = High (important for production readiness)
+[P2] = Medium (should have, but not blocking)
+[P3] = Low (nice to have, can be deferred)
+
+⸻
+
+P0 - CRITICAL/BLOCKING ITEMS (Must have for production deployment)
+
+| Item | Description | Milestone | Timeline | Status |
+|------|-------------|-----------|----------|--------|
+| Rollback endpoint | POST /trainer/rollback to deactivate current checkpoint and optionally revert to previous. Critical for production safety and experimentation. | Endpoint implemented, tested, documented | Week 1-2 | ⛔ |
+| Graph.json persistence | Export schema graph (entities + edges) to graph.json for versioning and recovery. Needed for graph consistency and rollback. | Graph export/import functions, versioning support | Week 1-2 | ⛔ |
+| Phase-3 test runner | run-phase3-tests.sh script to orchestrate all neuron endpoints and validate E2E flows. Required for CI/CD. | Test runner script, CI integration | Week 1-2 | ⛔ |
+| 10 tenants per DB type | Create 10 business-like tenant configurations for MySQL and MongoDB (currently only 2 exist). Required for production readiness testing. | Tenant configs created, test data seeded | Week 2-3 | ⛔ |
+| Unit test coverage >80% | Achieve >80% code coverage with comprehensive unit tests. Critical for code quality and regression prevention. | Coverage report shows >80%, all critical paths tested | Week 2-4 | ⛔ |
+| Integration test suite | End-to-end integration tests covering all neuron endpoints and Phase-2 integration. | Test suite implemented, CI integration | Week 3-4 | ⛔ |
+| CI/CD pipeline | Automated build, test, and deployment pipeline. Required for reliable releases. | Pipeline configured, automated deployments | Week 2-3 | ⛔ |
+| Database failover handling | Implement automatic failover and connection retry logic for database failures. | Failover logic, retry mechanisms | Week 2-3 | ⛔ |
+| Database backup/restore | Automated backup and restore procedures for all databases. Critical for data safety. | Backup automation, restore procedures tested | Week 2-3 | ⛔ |
+| Data backup automation | Automated backup for checkpoints, feedback, and golden sets. | Backup scripts, scheduling, verification | Week 2-3 | ⛔ |
+| Data restore procedures | Documented and tested restore procedures for all data types. | Procedures documented, tested | Week 3 | ⛔ |
+| Disaster recovery plan | Complete disaster recovery plan with RTO/RPO targets. | Plan documented, tested, approved | Week 3-4 | ⛔ |
+| Incident response playbook | Documented incident response procedures and escalation paths. | Playbook created, team trained | Week 3 | ⛔ |
+| Thread safety verification | Verify and ensure thread safety for all concurrent request handling. | Code review, testing, fixes | Week 2 | 🟨 |
+| SQL injection prevention | Verify all SQL queries use parameterized queries. Security audit required. | Security audit, fixes applied | Week 1-2 | 🟨 |
+| NoSQL injection prevention | Verify all MongoDB queries are injection-safe. Security audit required. | Security audit, fixes applied | Week 1-2 | 🟨 |
+| Input sanitization | Sanitize all user inputs to prevent injection attacks. | Input validation, sanitization layer | Week 1-2 | 🟨 |
+| Output sanitization verification | Verify all outputs are sanitized to prevent XSS and data leaks. | Security review, fixes | Week 1-2 | 🟨 |
+| Index safety validation | Validate index safety in production queries. Prevent unindexed scans. | Validation rules, monitoring | Week 2 | 🟨 |
+| Tenant data isolation verification | Verify complete data isolation between tenants. Security critical. | Security audit, isolation tests | Week 2 | 🟨 |
+| Encryption in transit (TLS) | Ensure all communications use TLS encryption. | TLS configured, certificates managed | Week 1-2 | 🟨 |
+| Deployment guide | Complete deployment guide with step-by-step instructions. | Guide written, reviewed | Week 2-3 | ⛔ |
+| Operations runbook | Complete operations runbook for common tasks and troubleshooting. | Runbook created, reviewed | Week 2-3 | ⛔ |
+
+⸻
+
+P1 - HIGH PRIORITY ITEMS (Important for production readiness)
+
+| Item | Description | Milestone | Timeline | Status |
+|------|-------------|-----------|----------|--------|
+| Few-shot runtime integration | Wire few-shot hints and aliases into encode_nl and match_candidates. Enables tenant-level adaptation. | Code changes, testing, validation | Week 3-4 | 🟨 |
+| Planner scoring/trace with A/C/P/S/R | Surface AlignPlus, CostPlus, GroupInfo, AliasStability, Parity in planner trace. Even stubbed values provide visibility. | Trace updates, planner integration | Week 3-4 | 🟨 |
+| Path disambiguation using A⁺/C/S | Use full AlignPlus/CostPlus/Stability blend for path disambiguation. Reduces brittle joins. | Algorithm implementation, testing | Week 4 | 🟨 |
+| Strict request validation | Implement strict Pydantic models with strict=True for all endpoints. | Model updates, validation tests | Week 2-3 | 🟨 |
+| Request ID correlation | Ensure request ID is propagated in all downstream calls and logs. | Middleware updates, logging | Week 2 | 🟨 |
+| IEM versioning and migration | Strategy and tooling for IEM versioning and migration between versions. | Versioning system, migration tools | Week 3-4 | ⛔ |
+| IEM backup/restore | Mechanism to backup and restore IEM files. | Backup scripts, restore procedures | Week 3 | ⛔ |
+| Match timeout handling | Implement timeout handling for match operations to prevent hanging. | Timeout logic, error handling | Week 2-3 | 🟨 |
+| Match result size limits | Enforce limits on match result sizes to prevent memory issues. | Limits implemented, tested | Week 2 | 🟨 |
+| Trainer resource limits | Set CPU/memory limits for trainer jobs to prevent resource exhaustion. | Resource limits, monitoring | Week 3 | ⛔ |
+| Trainer failure recovery | Implement recovery mechanisms for failed trainer jobs. | Recovery logic, retry mechanisms | Week 3-4 | ⛔ |
+| Checkpoint retention policy | Policy and automation for checkpoint retention and cleanup. | Policy defined, automation | Week 3 | ⛔ |
+| API rate limiting per endpoint | Per-endpoint rate limiting (not just global). | Rate limiting middleware | Week 2-3 | 🟨 |
+| API request/response validation | Middleware for comprehensive request/response validation. | Validation middleware, tests | Week 2-3 | 🟨 |
+| /readyz endpoint | Readiness check endpoint for load balancer health checks. | Endpoint implemented | Week 2 | 🟨 |
+| Config validation on load | Validate all config files on load with clear error messages. | Validation logic, error handling | Week 2-3 | 🟨 |
+| Config rollback on validation failure | Automatically rollback to previous config if validation fails. | Rollback logic, testing | Week 3 | ⛔ |
+| Config file validation on startup | Validate all config files during service startup. | Startup validation, error handling | Week 2 | 🟨 |
+| Log aggregation | Set up log aggregation (ELK/CloudWatch) for centralized logging. | Infrastructure setup, integration | Week 3-4 | ⛔ |
+| Alerting rules | Define and implement Prometheus alerting rules. | Rules defined, AlertManager configured | Week 3 | ⛔ |
+| Alert thresholds | Define alert thresholds for all critical metrics. | Thresholds defined, documented | Week 3 | ⛔ |
+| Error tracking | Integrate error tracking (Sentry/DataDog) for production error monitoring. | Integration, dashboard setup | Week 3-4 | ⛔ |
+| Metrics dashboard | Set up Grafana dashboard for metrics visualization. | Dashboard created, alerts configured | Week 3-4 | ⛔ |
+| Log retention policies | Define and implement log retention policies. | Policies defined, automation | Week 3 | ⛔ |
+| Request timeout enforcement | Enforce request timeouts to prevent resource exhaustion. | Timeout middleware, configuration | Week 2-3 | 🟨 |
+| Circuit breakers | Implement circuit breakers for external dependencies. | Circuit breaker library, integration | Week 3-4 | ⛔ |
+| Graceful degradation | Implement graceful degradation on errors. | Error handling, fallback logic | Week 3 | 🟨 |
+| Automatic rollback on error rate | Automatically rollback if error rate exceeds threshold. | Monitoring, rollback automation | Week 4 | ⛔ |
+| Graph consistency validation | Validate graph consistency on build and updates. | Validation rules, tests | Week 3 | 🟨 |
+| Query result size limits | Enforce limits on query result sizes. | Limits implemented, tested | Week 2-3 | 🟨 |
+| Query timeout handling | Implement query timeout handling. | Timeout logic, error handling | Week 2-3 | 🟨 |
+| Integration test suite | Comprehensive integration tests for Phase-2 integration. | Test suite, CI integration | Week 3-4 | 🟨 |
+| Fallback strategy documentation | Document fallback strategy for low neuronScore scenarios. | Documentation written | Week 2-3 | 🟨 |
+| Feature flag USE_NEURONS wiring | Complete end-to-end wiring of USE_NEURONS feature flag. | Flag implementation, testing | Week 3 | 🟨 |
+| Fallback policy implementation | Implement fallback (low neuronScore → rule planner). | Policy implementation, testing | Week 3-4 | ⛔ |
+| Parity test automation | Automate parity tests in CI/CD pipeline. | Test automation, CI integration | Week 3 | 🟨 |
+| RBAC policy enforcement | Implement role-based access control policy enforcement. | RBAC system, policy engine | Week 4 | ⛔ |
+| Unit test structure | Define and implement unit test structure and coverage targets. | Structure defined, examples | Week 2 | ⛔ |
+| Integration test scenarios | Document integration test scenarios and coverage. | Scenarios documented | Week 2-3 | ⛔ |
+| Load testing suite | Comprehensive load testing suite for performance validation. | Test suite, scenarios | Week 3-4 | ⛔ |
+| Test data management | Strategy and tooling for test data management. | Strategy, tooling | Week 2-3 | ⛔ |
+| Test data management strategy | Documented strategy for managing test data. | Strategy documented | Week 2 | ⛔ |
+| Regression test suite | Automated regression test suite. | Test suite, CI integration | Week 3-4 | ⛔ |
+| API documentation (OpenAPI) | Complete OpenAPI/Swagger documentation for all endpoints. | OpenAPI spec, documentation | Week 2-3 | 🟨 |
+| Troubleshooting guide | Comprehensive troubleshooting guide for common issues. | Guide written, reviewed | Week 3 | ⛔ |
+| Database connection pool tuning | Optimize database connection pool settings. | Tuning, performance testing | Week 2-3 | 🟨 |
+| Database migration strategy | Strategy and tooling for database migrations. | Strategy, migration tools | Week 3 | ⛔ |
+| Connection retry logic | Implement exponential backoff retry logic for database connections. | Retry logic, testing | Week 2-3 | 🟨 |
+| Database query timeout | Enforce query timeouts for all database operations. | Timeout enforcement, testing | Week 2 | 🟨 |
+| Database connection health monitoring | Monitor and alert on database connection health. | Monitoring, alerts | Week 2-3 | 🟨 |
+| Graceful shutdown handling | Implement graceful shutdown with resource cleanup. | Shutdown logic, testing | Week 2-3 | 🟨 |
+| Memory management | Implement proper memory management and resource cleanup. | Resource management, testing | Week 2-3 | 🟨 |
+| Load balancer health check | Configure load balancer health check endpoints. | Configuration, testing | Week 2 | ⛔ |
+| Tenant configuration validation | Validate tenant configuration files on load. | Validation logic, error handling | Week 2-3 | 🟨 |
+| RBAC implementation | Implement role-based access control system. | RBAC system, policy engine | Week 4 | ⛔ |
+| Audit logging | Implement audit logging for sensitive operations. | Logging system, audit trail | Week 3-4 | ⛔ |
+| Secrets management | Integrate secrets management (Vault/AWS Secrets Manager). | Integration, key rotation | Week 3-4 | ⛔ |
+| Encryption at rest | Implement encryption at rest for all stored data. | Encryption, key management | Week 4 | ⛔ |
+| Security scanning | Set up SAST/DAST security scanning in CI/CD. | Scanning tools, CI integration | Week 3 | ⛔ |
+| Vulnerability management | Process and tooling for vulnerability management. | Process, tooling | Week 3 | ⛔ |
+| API key rotation | Strategy and automation for API key rotation. | Strategy, automation | Week 3 | ⛔ |
+| Rate limiting per endpoint | Per-endpoint rate limiting configuration. | Configuration, testing | Week 2-3 | 🟨 |
+| Input validation rules | Document all input validation rules. | Documentation, examples | Week 2 | 🟨 |
+| Container image registry | Set up container image registry for deployments. | Registry setup, CI integration | Week 2-3 | ⛔ |
+| Rolling update strategy | Implement rolling update strategy for zero-downtime deployments. | Strategy, automation | Week 3 | ⛔ |
+| Health check probes | Configure Kubernetes liveness/readiness probes. | Probe configuration, testing | Week 2-3 | 🟨 |
+| Resource limits | Define and enforce CPU/memory resource limits. | Limits defined, enforced | Week 2-3 | ⛔ |
+| Horizontal scaling | Configure horizontal scaling for high availability. | Scaling configuration, testing | Week 3 | ⛔ |
+| Change management process | Documented change management process. | Process documented | Week 2-3 | ⛔ |
+| Incident escalation procedures | Documented incident escalation procedures. | Procedures documented | Week 2-3 | ⛔ |
+| Horizontal scaling testing | Test horizontal scaling under load. | Testing, validation | Week 3-4 | ⛔ |
+| Load balancing configuration | Configure load balancing for service instances. | Configuration, testing | Week 2-3 | ⛔ |
+| Performance SLA definitions | Define performance SLAs for all endpoints. | SLAs defined, monitoring | Week 2-3 | ⛔ |
+| Resource pooling configuration | Optimize resource pooling for better performance. | Configuration, testing | Week 2-3 | 🟨 |
+| Data retention policies | Define and implement data retention policies. | Policies defined, automation | Week 3 | ⛔ |
+| Data retention per tenant | Per-tenant data retention policies. | Policies, automation | Week 3-4 | ⛔ |
+| Data privacy compliance | Implement GDPR/CCPA compliance features. | Compliance features, documentation | Week 4 | ⛔ |
+| Privacy policy implementation | Implement privacy policy requirements. | Features, documentation | Week 3-4 | ⛔ |
+| Audit log requirements | Define and implement audit log requirements. | Requirements, implementation | Week 3 | ⛔ |
+| Code review requirements | Define code review requirements and process. | Requirements, process | Week 2 | ⛔ |
+| Dependency management | Strategy for dependency management and updates. | Strategy, tooling | Week 2-3 | 🟨 |
+| Version pinning | Pin all dependency versions for reproducibility. | Version pinning, documentation | Week 2 | 🟨 |
+
+⸻
+
+P2 - MEDIUM PRIORITY ITEMS (Should have, but not blocking)
+
+| Item | Description | Milestone | Timeline | Status |
+|------|-------------|-----------|----------|--------|
+| API versioning strategy | Define and implement API versioning strategy. | Strategy, implementation | Week 4-5 | ⛔ |
+| OpenAPI documentation completeness | Complete OpenAPI documentation with examples. | Documentation, examples | Week 3-4 | 🟨 |
+| IEM build performance | Optimize IEM build performance for large schemas. | Performance optimization | Week 4-5 | 🟨 |
+| Synonym cache invalidation | Strategy for synonym cache invalidation. | Strategy, implementation | Week 3-4 | 🟨 |
+| Encoding performance benchmarks | Performance benchmarks for encoding operations. | Benchmarks, documentation | Week 3-4 | 🟨 |
+| Match result caching | Implement caching strategy for match results. | Caching layer, invalidation | Week 4-5 | ⛔ |
+| Generation rate limiting | Per-tenant rate limiting for generation endpoint. | Rate limiting, configuration | Week 3-4 | 🟨 |
+| Generated query quality metrics | Metrics to measure generated query quality. | Metrics, monitoring | Week 4 | 🟨 |
+| Trainer job queue | Async job queue for trainer operations. | Queue system, workers | Week 4-5 | ⛔ |
+| Trainer metrics dashboard | Dashboard for trainer metrics and monitoring. | Dashboard, visualization | Week 4 | ⛔ |
+| API response compression | Implement response compression for large payloads. | Compression middleware | Week 4 | ⛔ |
+| API endpoint examples | Request/response examples for all endpoints. | Examples, documentation | Week 3-4 | ⛔ |
+| Error code reference | Complete error code reference documentation. | Documentation | Week 3-4 | ⛔ |
+| Config schema versioning | Versioning system for configuration schemas. | Versioning, migration | Week 4-5 | ⛔ |
+| Config change audit log | Audit log for all configuration changes. | Logging, audit trail | Week 4 | ⛔ |
+| Config file schema docs | Documentation for all configuration file schemas. | Documentation, examples | Week 3-4 | ⛔ |
+| Distributed tracing | Integrate distributed tracing (OpenTelemetry/Jaeger). | Integration, instrumentation | Week 4-5 | ⛔ |
+| Performance profiling endpoints | Endpoints for performance profiling and debugging. | Endpoints, documentation | Week 4 | ⛔ |
+| Metrics aggregation strategy | Strategy for metrics aggregation and storage. | Strategy, implementation | Week 4 | ⛔ |
+| Dashboard requirements | Document dashboard requirements and specifications. | Documentation | Week 3-4 | ⛔ |
+| Feature flags service | Integrate feature flags service for gradual rollouts. | Integration, configuration | Week 4-5 | ⛔ |
+| Gradual rollout controls | Percentage-based gradual rollout controls. | Controls, monitoring | Week 4-5 | ⛔ |
+| Canary analysis dashboard | Dashboard for canary analysis and comparison. | Dashboard, metrics | Week 4-5 | ⛔ |
+| Planner performance profiling | Performance profiling for planner operations. | Profiling, optimization | Week 4-5 | 🟨 |
+| Planner query plan caching | Caching for query plans to improve performance. | Caching, invalidation | Week 4-5 | ⛔ |
+| Planner cost model calibration | Calibrate planner cost model with real data. | Calibration, validation | Week 5 | ⛔ |
+| Graph build performance | Optimize graph build performance for large schemas. | Optimization, testing | Week 4-5 | 🟨 |
+| Graph incremental updates | Support incremental graph updates. | Incremental updates | Week 5 | ⛔ |
+| Complex query performance testing | Performance testing for complex queries. | Testing, optimization | Week 4-5 | 🟨 |
+| End-to-end performance benchmarks | Performance benchmarks for E2E flows. | Benchmarks, documentation | Week 4-5 | 🟨 |
+| Cross-service communication | Document cross-service communication patterns. | Documentation, examples | Week 3-4 | 🟨 |
+| Architecture diagrams | Create architecture diagrams for documentation. | Diagrams, documentation | Week 3-4 | ⛔ |
+| Performance tuning guide | Guide for performance tuning and optimization. | Guide, examples | Week 4 | ⛔ |
+| Config schema documentation | Complete configuration schema documentation. | Documentation, examples | Week 3-4 | ⛔ |
+| Migration guide | Guide for migrating from Phase-2 to Phase-3. | Guide, examples | Week 4 | ⛔ |
+| Developer onboarding guide | Guide for new developers joining the project. | Guide, examples | Week 4 | ⛔ |
+| Local development setup | Guide for local development environment setup. | Guide, automation | Week 3-4 | ⛔ |
+| Debugging tools and techniques | Documentation for debugging tools and techniques. | Documentation, examples | Week 3-4 | ⛔ |
+| Development environment requirements | Document development environment requirements. | Documentation | Week 3 | ⛔ |
+| Database read replicas | Support for database read replicas. | Replica support, routing | Week 5 | ⛔ |
+| Startup sequence documentation | Document startup sequence and initialization order. | Documentation | Week 3-4 | ⛔ |
+| Service discovery | Integrate service discovery for dynamic service registration. | Integration, configuration | Week 4-5 | ⛔ |
+| Tenant onboarding automation | Automate tenant onboarding process. | Automation, tooling | Week 4-5 | ⛔ |
+| Tenant usage analytics | Analytics for tenant usage patterns. | Analytics, dashboards | Week 4-5 | ⛔ |
+| Tenant quota management | Quota management system for tenants. | System, monitoring | Week 4-5 | ⛔ |
+| OAuth2/JWT authentication | OAuth2/JWT authentication support. | Implementation, integration | Week 5 | ⛔ |
+| Blue-green deployment | Blue-green deployment strategy. | Strategy, automation | Week 4-5 | ⛔ |
+| Service mesh integration | Integrate service mesh (Istio/Linkerd). | Integration, configuration | Week 5 | ⛔ |
+| API gateway integration | Requirements and integration for API gateway. | Requirements, integration | Week 4-5 | ⛔ |
+| Response caching | Response caching strategy for improved performance. | Strategy, implementation | Week 4-5 | ⛔ |
+| Database query result caching | Caching for database query results. | Caching, invalidation | Week 4-5 | ⛔ |
+| Performance regression testing | Automated performance regression testing. | Testing, CI integration | Week 4-5 | ⛔ |
+| Caching strategies | Comprehensive caching strategies documentation. | Documentation, examples | Week 4 | ⛔ |
+| Query optimization hints | Query optimization hints and guidelines. | Documentation, examples | Week 4 | 🟨 |
+| Async processing capabilities | Async processing for long-running operations. | Implementation, testing | Week 4-5 | 🟨 |
+| Data archival strategy | Strategy for data archival and long-term storage. | Strategy, automation | Week 4-5 | ⛔ |
+| Data export functionality | Functionality to export data for compliance. | Features, documentation | Week 4-5 | ⛔ |
+| Environment variable validation | Validate environment variables on startup. | Validation, error handling | Week 3-4 | 🟨 |
+| Environment variable docs | Complete environment variable documentation. | Documentation, examples | Week 3-4 | 🟨 |
+| Formula documentation | Complete documentation for all formulas (F1-F8). | Documentation, examples | Week 4 | ⛔ |
+| Formula weight sensitivity | Analysis of formula weight sensitivity. | Analysis, documentation | Week 4-5 | ⛔ |
+| Formula tuning guidelines | Guidelines for tuning formula weights. | Guidelines, examples | Week 4 | ⛔ |
+| Documentation standards | Standards for code and API documentation. | Standards, examples | Week 3-4 | ⛔ |
+| Code style guidelines | Code style guidelines and linting rules. | Guidelines, tooling | Week 3-4 | ⛔ |
+| Compliance reporting | Automated compliance reporting. | Reporting, automation | Week 4-5 | ⛔ |
+| Data export capabilities | Capabilities for data export and portability. | Features, documentation | Week 4-5 | ⛔ |
+
+⸻
+
+P3 - LOW PRIORITY ITEMS (Nice to have, can be deferred)
+
+| Item | Description | Milestone | Timeline | Status |
+|------|-------------|-----------|----------|--------|
+| Multi-language support | Support for languages beyond English. | Language support, testing | Future | ⛔ |
+| API deprecation policy | Policy for API deprecation and sunset. | Policy, documentation | Future | ⛔ |
+| /iem/entities endpoint | Expose entity-level embeddings API endpoint. | Endpoint, documentation | Future | 🟨 |
+| NEURONS_LTR_DEFAULT docs | Document NEURONS_LTR_DEFAULT environment variable. | Documentation | Week 4-5 | 🟨 |
+| NEURONS_DEBUG_BOOT docs | Document NEURONS_DEBUG_BOOT environment variable. | Documentation | Week 4-5 | 🟨 |
+| CDN integration | CDN integration for static assets. | Integration, configuration | Future | ⛔ |
+| Batch operation support | Support for batch operations. | Implementation, testing | Future | ⛔ |
+
+⸻
+
+TIMELINE SUMMARY
+
+Week 1-2: Critical security and safety items (P0 security, rollback, graph persistence, test runner)
+Week 2-3: Core infrastructure and testing (CI/CD, database failover, backups, deployment docs)
+Week 3-4: High-priority features and observability (few-shot integration, monitoring, alerting)
+Week 4-5: Medium-priority optimizations and documentation (performance, caching, docs)
+Future: Low-priority enhancements (multi-language, advanced features)

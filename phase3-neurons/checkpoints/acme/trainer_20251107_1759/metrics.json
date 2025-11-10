@@ -32,6 +32,5 @@
       "fanoutPenalty": 0.0,
       "sameEntityTimestampPrior": 0.02
     }
-  },
-  "ckpt": "acme/trainer_20251107_1759"
+  }
 }

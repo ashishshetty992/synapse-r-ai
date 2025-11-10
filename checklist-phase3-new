@@ -1,1001 +1,248 @@
-Awesome—here's a single, clean, status-driven tracker you can keep pin-boarded. I've only marked items ✅ where we've seen it work on your machine (from your curls/CLI). Everything else is 🟨 (partially/stubbed/planned) or ⛔ (not started).
-
-Phase-3: AI/ML Neuron Layer + Planner Integration — Status Checklist
+Phase-3: AI/ML Neuron Layer + Planner Integration — Status Checklist (One-Liners)
 
 0) Ground Truth & North Star
-	•	✅ Clear goal: AI-assisted runtime (intent → schema, safe UQL, MySQL+Mongo, indexes/parity/policy).
-	•	✅ Success criteria defined (Exit Criteria & Metrics list).
-Action: none.
+✅ Clear goal: AI-assisted runtime (intent → schema, safe UQL, MySQL+Mongo, indexes/parity/policy)
+✅ Success criteria defined (Exit Criteria & Metrics list)
 
 ⸻
 
 1) Neurons Service (FastAPI) & Contracts
-	•	✅ FastAPI app skeleton: 27+ endpoints implemented across multiple routers.
-	•	✅ Pydantic request/response models.
-	•	✅ External uem.json → produces iem.json (dim configurable).
-	•	✅ Runs locally (uvicorn, no Docker).
-	•	✅ Happy-path validation; API key auth (x-api-key); rate limiting (basic); structured logs + decision log.
-	•	🟨 Robust validators (bad payloads, missing files), request-id propagation everywhere.
-
-**Implementation Details:**
-
-**File:** `phase3-neurons/app/main.py` (lines 202-210)
-```python
-app = FastAPI(title="SYNAPSE-R Phase 3 Neurons", version="0.1.0")
-
-app.include_router(feedback_router)
-app.include_router(eval_router)
-app.include_router(eval_alias_router)
-app.include_router(trainer_router)
-app.include_router(fewshot_router)
-app.include_router(config_router)
-app.include_router(golden_router)
-```
-
-**Endpoints Implemented (27+):**
-- Core: `/iem/build`, `/iem/verify`, `/iem/show`
-- Intent: `/intent/encode`, `/intent/encode_nl`
-- Synapse: `/synapse/match`, `/synapse/fill`, `/synapse/paths`, `/synapse/explain`
-- Generator: `/generate`, `/examples/coverage`
-- Config: `/config/effective`, `/config/knobs` (GET/POST)
-- Debug: `/debug/runtime`, `/debug/graph`
-- Learning: `/feedback/record`, `/golden/list`, `/golden/add`
-- Trainer: `/trainer/run`, `/trainer/activate`, `/trainer/versions`, `/trainer/last_eval`
-- Eval: `/eval/last_eval` (alias)
-- Fewshot: `/fewshot/show`
-
-**Request ID Propagation:** ✅ Implemented via middleware (`main.py:217-218`)
-```python
-rid = str(uuid.uuid4())
-request.state.request_id = rid
-```
-
-**Completion Notes for 🟨 Items:**
-- **Robust validators**: Need stricter payload validation (check required fields, type validation, range checks)
-  - **File:** `phase3-neurons/app/main.py` - Add validation decorators or Pydantic validators
-  - **File:** `phase3-neurons/app/models.py` - Enhance BaseModel validators
-- **Request ID everywhere**: Most endpoints return `requestId`, but verify all error responses include it
-  - **File:** `phase3-neurons/app/main.py` - Check `err()` helper function
-
-Actions: add stricter payload/file checks; always emit requestId in responses; promote JSON logs to include latency, user-agent.
-
-Evidence: your curl runs for all endpoints; decision_log.read_tail() output; 401 on missing API key for /examples/coverage.
+✅ FastAPI app skeleton: 27+ endpoints implemented across multiple routers (feedback, eval, trainer, fewshot, config, golden, principles)
+✅ Pydantic request/response models for all endpoints
+✅ External uem.json → produces iem.json (dim configurable, default 256)
+✅ Runs locally (uvicorn, no Docker)
+✅ Happy-path validation; API key auth (x-api-key header); rate limiting (basic, RL_MAX/RL_WINDOW_SEC env vars); structured logs + decision log
+✅ Request ID propagation via middleware (x-request-id header in all responses)
+✅ Health check endpoint /healthz
+✅ Prometheus metrics endpoint /metrics
+🟨 Robust validators (bad payloads, missing files) - need stricter Pydantic validators and range checks
+🟨 Request-id propagation everywhere - most endpoints return requestId, verify all error responses include it
 
 ⸻
 
 2) Neuron-1: Schema Understanding (IEM)
-	•	✅ Field embeddings (char-ngrams) + role priors (id/timestamp/money/geo/category/text/qty).
-	•	✅ Alias gen (underscored ↔ spaced).
-	•	✅ Deterministic iem.json (dim=256).
-	•	✅ Quality checks computed (ids cluster, amounts cluster) — implicit.
-	•	✅ IEM versioning/drift detectable (compare iem.json snapshots).
-	•	🟨 Entity-level embeddings (per-entity vectors) exist? (basic; not exposed)
-Formula Lab
-	•	✅ F1 RoleBoost™: role-aware vector; emit roleBoost per field.
-	•	✅ F2 AliasStability™: drift guard (feeds S(p))—internal.
-
-**✅ /iem/verify Endpoint - IMPLEMENTED**
-
-**File:** `phase3-neurons/app/main.py` (lines 667-717)
-
-```python
-@app.get("/iem/verify", response_model=VerifyIEMResponse)
-def iem_verify(request: Request = None):
-    rid = getattr(request.state, "request_id", str(uuid.uuid4()))
-    if IEM is None:
-        return err(400, rid, "IEM not loaded")
-
-    # RoleBoost stats for all fields
-    role_boost_stats: List[RoleBoostStat] = []
-    for f in IEM.fields:
-        top_role = max(f.role.items(), key=lambda kv: kv[1])[0] if f.role else None
-        score = f.roleBoost if f.roleBoost is not None else compute_role_boost(f)
-        role_boost_stats.append(RoleBoostStat(
-            entity=f.entity, field=f.name, roleTop=top_role, boostScore=round(float(score), 4)
-        ))
-
-    # Drift alerts (compare with previous IEM snapshot)
-    drift_alerts: List[DriftAlert] = []
-    prev_path = (IEM_PATH + ".bak")
-    if os.path.exists(prev_path):
-        try:
-            prev = IEMIndex.load(prev_path)
-            prev_map = {(p.entity, p.name): p for p in prev.fields}
-            for f in IEM.fields:
-                p = prev_map.get((f.entity, f.name))
-                if p:
-                    alias_diff, vec_diff = compute_alias_stability(f.aliases, p.aliases, f.vec, p.vec)
-                    drift_alerts.append(DriftAlert(
-                        field=f"{f.entity}.{f.name}",
-                        aliasChange=round(alias_diff, 4),
-                        vecDrift=round(vec_diff, 4),
-                        warning="high drift" if (alias_diff > 0.5 or vec_diff > 0.5) else None
-                    ))
-        except Exception as e:
-            log_json("warning", rid, "iem.verify.drift.error", error=str(e))
-
-    # Cluster quality for each role
-    clusters: List[CQ] = []
-    for role in ["id", "timestamp", "money", "geo", "category", "text", "quantity"]:
-        score = cluster_quality(IEM.fields, role)
-        if score is not None:
-            count = sum(1 for f in IEM.fields if role in f.role)
-            clusters.append(CQ(role=role, avgSim=round(float(score), 4), count=count))
-
-    warnings = [f"Low cluster cohesion for role {c.role}" for c in clusters if c.avgSim < 0.5]
-
-    return VerifyIEMResponse(
-        ok=True,
-        roleBoost=role_boost_stats,
-        drift=drift_alerts,
-        clusters=clusters,
-        warnings=warnings,
-        requestId=rid
-    )
-```
-
-**What This Does:**
-- Exposes RoleBoost scores for all fields (F1 RoleBoost™)
-- Computes drift alerts by comparing current IEM with `.bak` snapshot (F2 AliasStability™)
-- Reports cluster quality metrics for each role type
-- Generates warnings for low-cohesion clusters
-
-**How to Verify:**
-```bash
-curl -s -H 'x-api-key: SYNAPSE@2025' http://localhost:8000/iem/verify | jq '{roleBoost: .roleBoost[:3], drift: .drift[:3], clusters: .clusters, warnings: .warnings}'
-```
-
-**Completion Notes for 🟨 Items:**
-- **Entity-level embeddings**: Basic implementation exists but not exposed via API
-  - **File:** `phase3-neurons/app/iem.py` - Check if entity vectors are computed
-  - **Action:** Add endpoint `/iem/entities` to expose per-entity embeddings if needed
-
-Actions: ✅ COMPLETE - /iem/verify endpoint fully implemented and working.
-
-Evidence: POST /iem/build → ok:true, fieldCount:32, saved path. GET /iem/verify returns roleBoost, drift, clusters, warnings.
+✅ Field embeddings (char-ngrams) + role priors (id/timestamp/money/geo/category/text/qty)
+✅ Alias generation (underscored ↔ spaced variants)
+✅ Deterministic iem.json output (dim configurable, default 256)
+✅ Quality checks computed (ids cluster, amounts cluster) via cluster_quality function
+✅ IEM versioning/drift detection (compare iem.json vs iem.json.bak snapshots)
+✅ Entity-level embeddings (per-entity vectors computed)
+✅ POST /iem/build endpoint (builds IEM from UEM, saves to iem.json, computes salience/role prior)
+✅ GET /iem/verify endpoint (RoleBoost stats, drift alerts, cluster quality, warnings, salience preview, role prior vector)
+✅ GET /iem/show endpoint (shows IEM schema with entities, fields, roles, aliases)
+✅ F1 RoleBoost™: role-aware vector computation; emit roleBoost per field in /iem/verify
+✅ F2 AliasStability™: drift guard (feeds S(p)) - computed in /iem/verify via compute_alias_stability
+✅ Salience computation (entity centrality 45% + constraint weight 35% + glossary confidence 20%) - normalized 0..1
+✅ Role prior vector computation (default_role_prior_vector) - exposed in /iem/verify
+🟨 Entity-level embeddings API endpoint (/iem/entities) - basic implementation exists but not exposed
 
 ⸻
 
-3) Neuron-2: Intent Encoder
-	•	✅ Encoder v0.2 (IQL→vector).
-	•	✅ /intent/encode live for IQL (fully implemented).
-	•	✅ /intent/encode_nl + synonyms.json (NL synonyms) FULLY IMPLEMENTED.
-Formula Lab
-	•	✅ F6 SynoMix™ (BM25 alias ⊕ cosine) FULLY IMPLEMENTED.
-
-**✅ /intent/encode_nl Endpoint - FULLY IMPLEMENTED**
-
-**File:** `phase3-neurons/app/main.py` (lines 578-604)
-
-```python
-@app.post("/intent/encode_nl", response_model=IntentEncodingNL)
-def intent_encode_nl(req: NLRequest = Body(...), request: Request = None):
-    rid = getattr(request.state, "request_id", str(uuid.uuid4()))
-    if IEM is None:
-        return err(400, rid, "IEM not loaded. Call /iem/build first.")
-    try:
-        synonyms = load_synonyms()  # ✅ Loads synonyms.json
-        tenant = getattr(request.state, "tenant_id", None)
-        time_cfg = load_time_cfg(tenant)
-        out = encode_intent_nl(req.text, IEM, synonyms, topK=(req.topK or 8), time_cfg=time_cfg)
-        log_json("info", rid, "intent.encode_nl", dim=out["dim"])
-        return IntentEncodingNL(
-            version=out["version"],
-            dim=out["dim"],
-            vec=out["vec"],
-            vocab=IEM.vocab,
-            debug={
-                "topAliasHits": out["topAliasHits"],  # ✅ Returns top alias hits
-                "blend": out["blend"],                # ✅ Returns cosine/BM25 blend weights
-                "text": req.text,
-                **out.get("debug", {}),
-            },
-            requestId=rid
-        )
-    except Exception as e:
-        log_json("error", rid, "intent.encode_nl.error", error=str(e))
-        return err(500, rid, str(e))
-```
-
-**✅ SynoMix™ Implementation - FULLY IMPLEMENTED**
-
-**File:** `phase3-neurons/app/intent.py` (lines 294-414)
-
-```python
-def encode_intent_nl(text: str, iem, synonyms: Dict[str, Any],
-                     topK: int = 8, alpha_cosine: float = 0.6,
-                     time_cfg: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    """
-    SynoMix v0: BM25 over alias docs + synonyms + cosine blend.
-      - tokens ← phrases from synonyms + word tokens
-      - alias_docs ← IEM field names + aliases (+ variants)
-      - BM25 scores over alias_docs
-      - synonym hits → direct target candidates
-      - combine → topAliasHits
-      - vec_cosine ← encode_intent_to_vocab on light NL stub (ask/target/select)
-      - vec_bm25 ← vectorize weighted targets from topAliasHits
-      - vec_final ← normalize(alpha*cos + (1-alpha)*bm25)
-    """
-    # Build lexicon from IEM fields, aliases, synonyms, time config
-    lexicon: Set[str] = set()
-    for f in iem.fields:
-        lexicon.add(_norm_soft(f.name))
-        for al in (f.aliases or []):
-            lexicon.add(_norm_soft(al))
-    for cat, mp in (synonyms or {}).items():
-        for k, vs in (mp or {}).items():
-            lexicon.add(_norm_soft(k))
-            if isinstance(vs, str):
-                lexicon.add(_norm_soft(vs))
-            elif isinstance(vs, list):
-                for v in vs: 
-                    lexicon.add(_norm_soft(v))
-    
-    # Tokenize and fuzzy match
-    toks = _tokens(raw_text)
-    # ... BM25 scoring over alias docs ...
-    # ... Synonym hit detection ...
-    
-    # Blend cosine and BM25 vectors
-    vec_cosine = encode_intent_to_vocab(stub, iem.vocab)
-    vec_bm25 = _vectorize_targets_with_weights(top_alias_hits, iem.vocab)
-    
-    blended = (np.array(vec_cosine, dtype=float) * float(alpha_cosine)) + \
-              (np.array(vec_bm25, dtype=float) * float(1.0 - alpha_cosine))
-    vec = _l2_normalize(blended.tolist())
-    
-    return {
-        "version": "intent-nl/0.1",
-        "dim": len(iem.vocab),
-        "vec": vec,
-        "topAliasHits": top_alias_hits,  # ✅ Returns top alias hits
-        "blend": {"cosine": float(alpha_cosine), "bm25": float(1.0 - alpha_cosine)},
-        "debug": debug
-    }
-```
-
-**What This Does:**
-- Loads `synonyms.json` from config directory
-- Performs BM25 scoring over IEM field aliases
-- Detects synonym hits and maps to target candidates
-- Blends cosine similarity vector with BM25-weighted vector
-- Returns `topAliasHits` in debug output showing matched aliases
-
-**How to Verify:**
-```bash
-curl -s -X POST http://localhost:8000/intent/encode_nl \
-  -H 'Content-Type: application/json' \
-  -H 'x-api-key: SYNAPSE@2025' \
-  -d '{"text": "top revenue by city"}' | jq '{vec: .vec[:5], topAliasHits: .debug.topAliasHits[:3], blend: .debug.blend}'
-```
-
-Actions: ✅ COMPLETE - /intent/encode_nl fully implemented with SynoMix™, synonyms.json loading, and topAliasHits in debug output.
+3) Neuron-2: Intent Encoder (NL + IQL)
+✅ Encoder v0.2 (IQL → vector via char-ngrams bag)
+✅ POST /intent/encode endpoint (IQL → vector, returns vec, vocab, version)
+✅ POST /intent/encode_nl endpoint (NL text → vector with synonyms injection, time config, topAliasHits debug)
+✅ synonyms.json loading (e.g., "revenue→total_amount", "city→shipping_city")
+✅ Time config integration (tenant-level time grammar via load_time_cfg)
+✅ Top alias hits debug output (shows matched aliases in debug.topAliasHits)
+✅ F6 SynoMix™ (BM25 alias score ⊕ cosine blend, alpha_cosine=0.6) - fully implemented in intent.py
+✅ BM25 scoring over IEM field aliases and synonyms
+✅ Synonym hit detection and mapping to target candidates
+✅ Cosine similarity vector blended with BM25-weighted vector
+✅ Blend weights exposed in debug output (cosine/BM25 ratio)
+🟨 Few-shot aliases not merged into encode_nl runtime (loaded but not actively applied)
+🟨 Few-shot hints not applied in matching runtime (loaded/displayed via /fewshot/show, not used in match_candidates)
 
 ⸻
 
 4) Neuron-3: Synapse Matching
-	•	✅ Cosine ranking over IEM fields/entities.
-	•	✅ Tunables: topKTargets, topKEntities, roleAlpha.
-	•	✅ Conflict resolver (multi "city"/"category" candidates) with blended scoring.
-	•	✅ /synapse/fill returns slot resolutions + scored candidates.
-	•	✅ Join hints + single-hop inference (see §7 for multi-hop).
-Formula Lab
-	•	✅ F3 AlignPlus™ (coverage-aware A(p))—values present in conflict why and scores.
-	•	✅ F4 PathScore™ (single-hop wired; overrides supported via pathScoringOverrides).
-
-**✅ All Three Hardening Items - COMPLETE**
-
-**1. Per-edge breakdown in /synapse/paths debug - ✅ IMPLEMENTED**
-
-**File:** `phase3-neurons/app/main.py` (lines 182-196, 1149-1152)
-
-```python
-def _path_edge_breakdowns(iem, intent_vec, raw_edges, ps_cfg: dict, deg_index: dict[str,int]) -> list[dict]:
-    """Return a list of per-edge debug dicts for the given raw path."""
-    out = []
-    for idx, e in enumerate(raw_edges):
-        try:
-            out.append(_edge_breakdown(iem, intent_vec, e, idx, ps_cfg, deg_index))
-        except Exception as _e:
-            se, sf, de, df, why = e
-            out.append({
-                "edge": f"{se}.{sf} → {de}.{df}",
-                "error": str(_e),
-                "why": why,
-                "hop": idx + 1
-            })
-    return out
-
-# In synapse_paths():
-edge_breaks = _path_edge_breakdowns(IEM, (intent_vec or [0.0]*IEM.dim), raw_edges_for_dbg, ps_cfg, deg_index)
-edge_scores_by_path.append(edge_breaks)  # ✅ Added to debug output
-```
-
-**2. Normalized scoreNorm 0–1 - ✅ IMPLEMENTED**
-
-**File:** `phase3-neurons/app/main.py` (lines 1137-1159)
-
-```python
-# avoid div-by-zero; if no paths, keep max at 1.0
-safe_max = max_s if (raw and max_s > 0.0) else 1.0
-
-for s, edges in raw[:req.topK]:
-    # ... path processing ...
-    
-    # NEW: normalized score for UI sliders (0..1)
-    score_norm_top.append(float(s / safe_max))  # ✅ Normalized scores
-
-debug_dict = {
-    # ...
-    "scoreNormTop": score_norm_top,  # ✅ Included in response
-    "scoreNormHint": "score / scoreMax",
-}
-```
-
-**3. Guardrail clamp + debug.warn - ✅ IMPLEMENTED**
-
-**File:** `phase3-neurons/app/main.py` (lines 1025-1031)
-
-```python
-if req.pathScoringOverrides:
-    for k, v in (req.pathScoringOverrides or {}).items():
-        if k in ps_cfg and v is not None:
-            clamped = clamp(f"pathScoring.{k}", float(v))  # ✅ Clamping
-            if clamped != float(v):
-                warns.append(f"clamped {k} from {v} to {clamped}")  # ✅ Warning
-            ps_cfg[k] = clamped
-
-debug_dict = {
-    # ...
-    "warn": warns if warns else None,  # ✅ Warnings included
-}
-```
-
-**What These Do:**
-- **Edge breakdowns**: Shows per-edge scoring components (baseCos, basePrior, blend) matching `_path_score` semantics
-- **Score normalization**: Provides 0-1 normalized scores for consistent UI sliders
-- **Override guardrails**: Clamps out-of-range values and logs warnings in debug output
-
-**How to Verify:**
-```bash
-curl -s -X POST http://localhost:8000/synapse/paths \
-  -H 'Content-Type: application/json' \
-  -H 'x-api-key: SYNAPSE@2025' \
-  -d '{"intent": {"ask": "top_k", "metric": {"op": "sum", "target": "orders.total_amount"}, "target": "orders.shipping_city"}, "start": "orders", "goal": "customer", "topK": 2}' \
-  | jq '{edgeScoresByPath: .debug.edgeScoresByPath[0][:2], scoreNormTop: .debug.scoreNormTop, warn: .debug.warn}'
-```
-
-Actions: ✅ COMPLETE - All three hardening items implemented and working.
-
-Evidence: curls showing conflict resolution (category, timestamp) with why containing weights, PathScore, CosineContext, RoleCoherence; overrides changed scores as expected. Edge breakdowns, scoreNorm, and guardrails all functional.
+✅ Cosine ranking over IEM fields/entities (match_candidates function)
+✅ Tunables: topKFields, topKEntities, roleAlpha, aliasAlpha, shapeAlpha, shapeBeta, metricAlpha
+✅ Conflict resolver (multi "city"/"category" candidates) with blended scoring (PathScore, CosineContext, RoleCoherence)
+✅ POST /synapse/match endpoint (returns topFields, topEntities, debug with tenantId, pathScoring source, principles)
+✅ POST /synapse/fill endpoint (slot filling + conflict resolution + AlignPlus computation, returns intentFilled, chosenTarget, conflicts, alignPlus)
+✅ POST /synapse/paths endpoint (join path inference with PathScore, edge breakdowns, normalized scores, guardrails, LTR support)
+✅ POST /synapse/explain endpoint (explains slot filling decisions with per-candidate scores)
+✅ F3 AlignPlus™ (coverage-aware A(p)) - computed in synapse.py, values present in conflict why and scores (Abase, Coverage, OffSchemaRate, Aplus)
+✅ F4 PathScore™ (semantics + index + fanout + hop cost) - implemented in synapse.py:_path_score with edge breakdowns
+✅ SalienceScore (gamma configurable, applied in matching via _apply_salience)
+✅ UnknownBackoff (resolves generic roles like 'category' to specific fields using salience)
+✅ Hub penalty toggle (hubPenalty, hubDegreeThreshold configurable in pathScoring)
+✅ Timestamp prior (same-entity + locality decay 0.4× for 1-hop) - preferSameEntityTimestampDelta override live
+✅ Conflict transparency (selectedBy, decisionScore, bestNumericScore top-level; finalScore/reason per-candidate in scores[])
+✅ Canonical last_eval feed-through in debug (pathScoring source, principles enabled)
+✅ Per-edge breakdown in /synapse/paths debug (edgeScoresByPath with baseCos, basePrior, blend per edge)
+✅ Normalized scoreNorm 0–1 (scoreNormTop array for UI sliders, scoreNormHint)
+✅ Override guardrails with debug.warn when clamped (pathScoringOverrides clamped, warnings in debug.warn)
+✅ LTR (Learning to Rank) re-ranking for paths (x-ltr header, NEURONS_LTR_DEFAULT env, ltr_rerank_paths function)
+✅ Path features extraction (x-features header: hubSteps, fanoutSteps, bridges, pkToFkSteps, fkToPkSteps, revisits, uniqueEntities)
+✅ Path component breakdowns (avgCos, avgPrior, rawBlend, lengthPrior, final) in scoreComponentsByPath
+✅ Entity blend (entityWeight/fieldWeight/entityAliasAlpha, centroid_gamma) - configurable in entity.json
+✅ Salience scoring with gamma configurable (salience.gamma in shaping.json, applied in matching)
+✅ Shadow mode support (TRAINER_SHADOW_ONLY env, x-experiment: train-shadow header returns baseline vs active comparison)
+🟨 Conflict transparency (finalScore/reason not top-level) - per-candidate only, not in top-level conflict object
 
 ⸻
 
 5) Neuron-4: Auto-Question Generator (PoC)
-	•	✅ Prototype spec (top_k / trend / compare).
-	•	✅ /generate → per-entity IQLs written to examples/aiql.
-	•	✅ Validator (ops/validate-examples.js) passes.
-	•	✅ Coverage emitted at examples/aiql/_coverage.json and via /examples/coverage.
-	•	✅ Make/NPM helpers: make generate-aiql, make validate-aiql, make regen-aiql, npm run regen:aiql.
-Actions: none (Phase-3 scope met).
-
-Evidence: total/written:24; validator [OK] 24 files; coverage JSON shows role coverage by entity.
+✅ Prototype spec (top_k / trend / compare patterns)
+✅ POST /generate endpoint (produces IQLs per entity, writes to examples/aiql, generates coverage)
+✅ Validator (ops/validate-examples.js) passes all generated examples
+✅ Coverage emitted at examples/aiql/_coverage.json (per-entity role coverage)
+✅ GET /examples/coverage endpoint (returns cached coverage from last /generate call)
+✅ Make/NPM helpers: make generate-aiql, make validate-aiql, make regen-aiql, npm run regen:aiql
+✅ Strict mode (drops unsafe pivots by default, can disable with strict:false)
 
 ⸻
 
-6) Neuron-5: Learning & Few-Shot Tuning — 🟨 **85% COMPLETE** (NOT ⛔)
-
-**Status Update:** This section is **85% complete**, not "not started". All major APIs are implemented and working.
-
-Goals: learn from feedback, per-tenant few-shot, autotune shaping, golden-set evals, versioned checkpoints.
-
-**✅ Feedback Store - IMPLEMENTED**
-
-**File:** `phase3-neurons/app/feedback.py` (lines 14-31)
-
-```python
-@router.post("/record", response_model=FeedbackRecordOut)
-async def record(inp: FeedbackRecordIn, request: Request = None):
-    rid = getattr(request.state, "request_id", "-")
-    row = {
-        "ts": int(time.time()*1000),
-        "tenant": inp.tenant or (getattr(request.state, "tenant_id", None) or "default"),
-        "intent": (None if inp.sensitive else inp.intent),  # ✅ PII filtering
-        "chosenTarget": inp.chosenTarget,
-        "otherSlots": (None if inp.sensitive else inp.otherSlots),
-        "iemHash": inp.iemHash,
-        "latencyMs": inp.latencyMs,
-        "ua": (request.headers.get("user-agent") if request else None),
-        "rid": rid
-    }
-    fid = uuid.uuid4().hex
-    path = os.path.join(DATA_DIR, "feedback.jsonl")
-    _append_jsonl(path, {"id": fid, **row})  # ✅ Append-only JSONL
-    return FeedbackRecordOut(ok=True, id=fid, requestId=rid)
-```
-
-**✅ Golden Set APIs - IMPLEMENTED**
-
-**File:** `phase3-neurons/app/golden.py` (lines 20-88)
-
-```python
-@router.get("/list")
-async def golden_list(request: Request = None):
-    tenant = getattr(request.state, "tenant_id", None) or "default"
-    base = os.path.join(GOLDEN_DIR, tenant)
-    items: List[Dict[str, Any]] = []
-    if os.path.isdir(base):
-        for fn in os.listdir(base):
-            if fn.endswith(".json"):
-                try:
-                    items.append(json.load(open(os.path.join(base, fn))))
-                except Exception:
-                    pass
-    return {"ok": True, "tenant": tenant, "count": len(items), "items": items}
-
-@router.post("/add")
-def golden_add(request: Request, payload: Dict[str, Any] = Body(...)):
-    # Tenant precedence: header → query → body → "default" ✅
-    header_tenant = request.headers.get("x-tenant-id")
-    query_tenant  = request.query_params.get("tenant")
-    body_tenant   = (payload.get("tenant") if isinstance(payload, dict) else None)
-    tenant = (header_tenant or query_tenant or body_tenant or "default").strip() or "default"
-    
-    # Stores items as JSON list files (e.g., top_k-t.json) ✅
-    items.append(item)
-    with open(fpath, "w") as f:
-        json.dump(items, f, indent=2)
-```
-
-**✅ Trainer APIs - IMPLEMENTED**
-
-**File:** `phase3-neurons/app/trainer.py` (lines 53-207)
-
-```python
-@router.post('/run', response_model=TrainerRunOut)
-async def trainer_run(inp: TrainerRunIn, request: Request = None):
-    # Loads tenant/global shaping.json ✅
-    # Merges with defaults ✅
-    # Clamps weights to safe ranges ✅
-    ckpt_name = f"trainer_{datetime.now().strftime('%Y%m%d_%H%M')}"
-    out_dir = os.path.join(CKPT_DIR, tenant, ckpt_name)
-    os.makedirs(out_dir, exist_ok=True)
-    
-    write_json(os.path.join(out_dir, 'shaping.json'), s)  # ✅ Creates checkpoint
-    write_json(os.path.join(out_dir, 'fewshot.json'), _DEFAULT_FEWSHOT)
-    
-    metrics = compute_metrics_for_tenant(tenant=tenant, shaping=s, fewshot=_DEFAULT_FEWSHOT)  # ✅ Evaluates
-    write_json(os.path.join(out_dir, 'metrics.json'), metrics)
-    
-    # ✅ Prometheus metrics
-    if getattr(_main, "PROM_REG", None):
-        _main.MET_TRAIN_RUNS.inc()
-        _main.MET_TOP1.labels(tenant=tenant_lbl).set(float(metrics.get("top1_acc", 0.0)))
-        _main.MET_MRR.labels(tenant=tenant_lbl).set(float(metrics.get("mrr", 0.0)))
-    
-    return TrainerRunOut(ok=True, ckpt=os.path.join(tenant, ckpt_name), metrics=metrics, requestId=rid)
-
-@router.post('/activate')
-async def trainer_activate(inp: ActivateIn, request: Request = None):
-    # ✅ Activates checkpoint by writing to runtime/active.json
-    active = {
-        "checkpoint": inp.checkpoint,
-        "shaping": shp,
-        "fewshot": fs
-    }
-    write_json(ACTIVE_PTR, active)
-
-@router.get('/versions', response_model=VersionsOut)
-async def trainer_versions(request: Request = None):
-    # ✅ Lists all checkpoints with metrics
-
-@router.get("/last_eval")
-def trainer_last_eval(request: Request, tenant: Optional[str] = Query(None)):
-    # ✅ Returns metrics for active checkpoint
-```
-
-**✅ Evaluator - IMPLEMENTED**
-
-**File:** `phase3-neurons/app/eval.py` (lines 58-107)
-
-```python
-def compute_metrics_for_tenant(tenant: str, shaping: Dict[str, Any] | None = None, fewshot: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    gold = _iter_golden(tenant)  # ✅ Loads golden set (handles list files)
-    n = len(gold)
-    
-    # ✅ Computes all required metrics
-    for row in gold:
-        intent = row.get("intent") or {}
-        expected = row.get("expected") or {}
-        exp_target = expected.get("target")
-        
-        intent_vec = encode_intent_to_vocab(intent, IEM.vocab)
-        m = match_candidates(IEM, intent_vec, top_k_fields=20, top_k_entities=8, intent_obj=intent)
-        ranked = [f"{sf.entity}.{sf.name}" for sf in m.topFields]
-        
-        # Top-1 accuracy ✅
-        if exp_target in ranked:
-            rank = ranked.index(exp_target) + 1
-            sum_rr += 1.0 / rank  # MRR ✅
-            if rank == 1: top1_hits += 1
-        
-        # Slot F1 ✅
-        sum_slot_f1 += _slot_f1(exp_slots, predicted_slots)
-        
-        # Aplus mean ✅
-        ap = compute_alignplus(abase, intent, tokens=[], mapped_terms=set(), shaping_cfg=shaping or {})
-        sum_aplus += ap["Aplus"]
-        
-        # PathScore mean ✅
-        ctx = score_target_context(IEM, intent_vec, tgt, intent_obj=intent)
-        sum_path += float(ctx.get("PathScore", 0.0))
-    
-    return {
-        "top1_acc": top1_hits / n,
-        "mrr": sum_rr / n,
-        "slot_f1": sum_slot_f1 / n,
-        "aplus_mean": sum_aplus / n,
-        "pathscore_mean": sum_path / n,
-        "n_golden": n,
-        "n_feedback": n_feedback
-    }
-```
-
-**✅ Few-Shot Runtime - IMPLEMENTED**
-
-**File:** `phase3-neurons/app/fewshot.py` (lines 9-39)
-
-```python
-@router.get("/show", response_model=FewshotShowOut)
-async def fewshot_show(tenant: str = Query(default="default"), request: Request = None):
-    # ✅ Loads fewshot.json from active checkpoint
-    # ✅ Merges global → tenant (merge order correct)
-    merged = {"hints": [], "aliases": {}}
-    g = fs.get("global", {})
-    merged["hints"] += g.get("hints", [])
-    merged["aliases"].update(g.get("aliases", {}))
-    
-    t = fs.get("tenants", {}).get(tenant_key, {})
-    merged["hints"] += t.get("hints", [])
-    merged["aliases"].update(t.get("aliases", {}))
-    
-    return FewshotShowOut(tenant=tenant_key, merged=merged, requestId=rid)
-```
-
-**✅ Versioning System - IMPLEMENTED**
-
-**File:** `phase3-neurons/runtime/active.json` structure
-```json
-{
-  "checkpoint": "trainer_20251105_1113",
-  "shaping": "path/to/shaping.json",
-  "fewshot": "path/to/fewshot.json"
-}
-```
-
-**Completion Notes for Remaining 15%:**
-
-**⛔ Missing:**
-1. **POST /trainer/rollback endpoint**
-   - **File:** `phase3-neurons/app/trainer.py`
-   - **Action:** Add endpoint to deactivate current checkpoint and optionally revert to previous
-   - **Implementation:** Similar to `/activate` but sets `active.json` to previous checkpoint or clears it
-
-2. **Make/NPM commands for trainer ops**
-   - **Files:** `Makefile` or `package.json`
-   - **Actions needed:**
-     - `make feedback-demo` → seeds 20 feedback rows via POST /feedback/record
-     - `make trainer-run` → calls POST /trainer/run, prints checkpoint + metrics
-     - `make trainer-activate CKPT=...` → calls POST /trainer/activate
-     - `npm run train` → POST /trainer/run (global)
-     - `npm run train:tenant -- acme` → POST /trainer/run with tenant
-     - `npm run trainer:activate -- trainer_YYYYMMDDHHMM` → POST /trainer/activate
-
-**🟨 Partial:**
-3. **Few-shot runtime integration**
-   - **Current:** Few-shot loaded and shown via `/fewshot/show`, but not actively used in matching
-   - **Files to modify:**
-     - `phase3-neurons/app/intent.py` - Wire few-shot hints into `/intent/encode_nl`
-     - `phase3-neurons/app/synapse.py` - Wire few-shot hints into `match_candidates`
-   - **Action:** Load few-shot config in middleware or endpoints, apply hints to boost role/alias priors during matching
-
-**✅ Working:**
-- Shadow AB testing structure exists (`TRAINER_SHADOW_ONLY` env var, `x-experiment: train-shadow` header)
-- Canary gating (`TRAINER_TENANT_CANARY` env var)
-- Prometheus metrics (gauges defined and partially wired)
-- PII filtering (sensitive flag in feedback)
-- Tenant isolation (checkpoints stored per tenant)
-
-**How to Verify:**
-```bash
-# Test feedback
-curl -X POST http://localhost:8000/feedback/record \
-  -H 'Content-Type: application/json' -H 'x-api-key: SYNAPSE@2025' \
-  -d '{"intent": {"ask": "top_k"}, "chosenTarget": "orders.shipping_city"}'
-
-# Test golden set
-curl http://localhost:8000/golden/list -H 'x-api-key: SYNAPSE@2025' | jq
-
-# Test trainer
-curl -X POST http://localhost:8000/trainer/run \
-  -H 'Content-Type: application/json' -H 'x-api-key: SYNAPSE@2025' \
-  -d '{"tenant": "acme"}' | jq '{ckpt, metrics}'
-
-# Test evaluator
-curl http://localhost:8000/trainer/last_eval -H 'x-api-key: SYNAPSE@2025' | jq
-```
-
-Status: 🟨 **85% complete** - All APIs implemented, missing rollback endpoint and CLI tools, few-shot needs runtime integration.
+6) Neuron-5: Learning & Few-Shot Tuning
+✅ Feedback store (append-only JSONL: data/feedback.jsonl with ts, tenant, intent, chosenTarget, otherSlots, iemHash, userAgent, latencyMs, rid)
+✅ POST /feedback/record endpoint (records feedback with PII filtering via sensitive flag)
+✅ Golden set management (curated eval in golden/ directory, supports list files)
+✅ GET /golden/list endpoint (returns all golden items for tenant)
+✅ POST /golden/add endpoint (adds golden item, tenant precedence: header → query → body → default)
+✅ Trainer grid search (small-grid search over alias_alpha, shape_alpha, shape_beta, metric_alpha, role_alpha_default, salience.gamma)
+✅ POST /trainer/run endpoint (runs trainer, creates checkpoint, evaluates on golden set, returns metrics)
+✅ Metrics computation (Top-1 acc, MRR, Role hit@1, Slot F1, Aplus mean, PathScore mean, slot_breakdown)
+✅ Checkpoints (app/checkpoints/trainer_{yyyymmddHHMM}/shaping.json, fewshot.json, metrics.json)
+✅ Canonical last_eval.json (tenant-level: checkpoints/<tenant>/last_eval.json)
+✅ GET /trainer/last_eval endpoint (returns canonical last_eval.json, format: ok/checkpoint, no ckpt field)
+✅ GET /eval/last_eval endpoint (returns active checkpoint metrics.json, format: ckpt field, legacy format)
+✅ POST /trainer/activate endpoint (activates checkpoint, writes to runtime/active.json)
+✅ GET /trainer/versions endpoint (lists all checkpoints with metrics)
+✅ GET /fewshot/show endpoint (preview applied few-shot patterns, merges global → tenant)
+✅ Versioning system (runtime/active.json with checkpoint, shaping, fewshot paths)
+✅ Prometheus metrics (synapse_trainer_runs_total, synapse_trainer_top1_acc{tenant}, synapse_trainer_mrr{tenant}, synapse_feedback_rows_total, synapse_golden_rows_total{tenant})
+✅ PII filtering (sensitive flag in feedback prevents storing raw user text)
+✅ Tenant isolation (checkpoints stored per tenant: checkpoints/<tenant>/...)
+✅ Weight clamps (safe ranges enforced: alias_alpha ∈ [0.25, 0.6], etc.)
+✅ Shadow AB testing structure (TRAINER_SHADOW_ONLY env var, x-experiment: train-shadow header)
+✅ Canary gating (TRAINER_TENANT_CANARY env var, tenant allowlist)
+✅ Slot metrics (Slot-F1 and slot_breakdown computed and exposed in trainer metrics)
+✅ Conflict transparency in trainer eval (all conflicts include selectedBy, decisionScore, bestNumericScore fields)
+⛔ POST /trainer/rollback endpoint (not implemented - should deactivate current checkpoint, optionally revert to previous)
+⛔ Make/NPM commands for trainer ops (make feedback-demo, make trainer-run, make trainer-activate CKPT=..., npm run train, npm run train:tenant, npm run trainer:activate)
+🟨 Few-shot runtime integration (few-shot loaded and shown via /fewshot/show, but not actively used in encode_nl/match_candidates - needs wiring in intent.py and synapse.py)
 
 ⸻
 
 7) Schema Graph & Multi-Join Reasoning
-	•	✅ Single-hop join path working (FK edges) and scored.
-	•	✅ Multi-hop path finding (BFS up to 3 hops) - IMPLEMENTED.
-	•	🟨 graph.json builder (entities + edges with FK=1.0; heuristic edges <1.0) - NOT IMPLEMENTED.
-	•	🟨 Path disambiguation using A⁺/C/S blend - NOT IMPLEMENTED.
-
-**✅ Multi-Hop Path Finding - IMPLEMENTED**
-
-**File:** `phase3-neurons/app/synapse.py` (lines 476-500)
-
-```python
-def _bfs_paths(adj: dict[str, list[tuple[str,str,str,str]]],
-               start: str, goal: str, max_hops: int = 2) -> list[list[tuple[str,str,str,str]]]:
-    """BFS over entities; edges carry (srcField, dstEntity, dstField, why)"""
-    if start == goal: return [[]]
-    # cache by (graph_id, start, goal, max_hops). graph_id≈|adj| to avoid keeping iem.
-    cache_key = (len(adj), start, goal, max_hops)
-    if cache_key in _BFS_CACHE:
-        return _BFS_CACHE[cache_key]  # ✅ Performance cache
-    paths = []
-    queue = deque()
-    queue.append((start, [], set([start])))
-    while queue:
-        curr_ent, path, seen = queue.popleft()
-        if len(path) > max_hops: 
-            continue
-        for (srcF, dstE, dstF, why) in adj.get(curr_ent, []):
-            if dstE in seen: 
-                continue
-            new_path = path + [(curr_ent, srcF, dstE, dstF, why)]
-            if dstE == goal:
-                paths.append(new_path)
-            else:
-                queue.append((dstE, new_path, seen | set([dstE])))
-    _BFS_CACHE[cache_key] = paths
-    return paths
-```
-
-**File:** `phase3-neurons/app/main.py` (lines 1019-1020, 1034-1037)
-
-```python
-adj = _build_join_graph(IEM)  # ✅ Builds join graph from IEM
-raw_paths = _bfs_paths(adj, start=startE, goal=goalE, max_hops=req.maxHops)  # ✅ Finds paths up to max_hops
-
-# ✅ Scores all paths with PathScore™
-for p in raw_paths:
-    s = _path_score(IEM, intent_vec or [0.0]*IEM.dim, p, cfg=ps_cfg)
-    edges = [PathEdge(srcEntity=a, srcField=b, dstEntity=c, dstField=d, why=e) for (a,b,c,d,e) in p]
-    raw.append((s, edges))
-```
-
-**What This Does:**
-- Builds join graph from IEM entities and FK relationships
-- Uses BFS to find all paths between start and goal entities (up to `max_hops`, default 2, supports 3)
-- Caches results for performance (`_BFS_CACHE`)
-- Scores each path using PathScore™ with schema-aware knobs
-- Returns paths sorted by score
-
-**How to Verify:**
-```bash
-curl -s -X POST http://localhost:8000/synapse/paths \
-  -H 'Content-Type: application/json' -H 'x-api-key: SYNAPSE@2025' \
-  -d '{"start": "payment", "goal": "customer", "maxHops": 3, "topK": 3}' \
-  | jq '{paths: [.paths[] | {hops: .hops, score: .score, path: [.path[] | "\(.srcEntity).\(.srcField)→\(.dstEntity).\(.dstField)"]}]}'
-```
-
-**Completion Notes for 🟨 Items:**
-
-1. **graph.json builder**
-   - **Status:** NOT IMPLEMENTED
-   - **File:** New file needed: `phase3-neurons/app/graph_builder.py` or add to `main.py`
-   - **Action:** Create endpoint `/graph/export` or function that:
-     - Reads IEM entities and joins
-     - Builds graph structure: `{"entities": [...], "edges": [{"from": "...", "to": "...", "weight": 1.0, "type": "fk"}]}`
-     - Writes to `graph.json` file
-   - **Why:** Useful for visualization, debugging, external tooling
-
-2. **Path disambiguation using A⁺/C/S blend**
-   - **Status:** NOT IMPLEMENTED
-   - **File:** `phase3-neurons/app/main.py` - `/synapse/paths` endpoint
-   - **Action:** When multiple paths have similar PathScore, use AlignPlus (A⁺), Cost (C), and Stability (S) to disambiguate
-   - **Implementation:** Add scoring function that combines PathScore with A⁺/C/S values, re-rank paths
-
-**✅ Edge Scores & ScoreNorm - IMPLEMENTED** (see Section 4)
-
-Action: ✅ Multi-hop paths working. Missing: graph.json export and A⁺/C/S disambiguation.
-
-Evidence: /synapse/paths shows 2-hop and 3-hop paths working (e.g., payment→orders→customer, order_item→orders→customer→segment).
+✅ Single-hop join path working (FK edges) and scored via PathScore
+✅ Multi-hop path finding (BFS up to 3 hops) - _bfs_paths function with caching (_BFS_CACHE)
+✅ In-memory graph building (_build_join_graph from IEM entities and joins)
+✅ PathScore ranking (all paths scored with PathScore™, sorted by score)
+✅ Degree index computation (build_degree_index for hub detection)
+✅ Hub detection & penalties (hubDegreeThreshold, hubPenalty configurable)
+✅ Fanout penalties (fanoutPenalty per extra fanout step)
+✅ Bridge detection & penalties (bridgePenalty for narrow bottlenecks)
+✅ Direction-aware bonuses (pkToFkBonus for PK→FK, fkToPkBonus for FK→PK)
+✅ Edge breakdowns in paths (per-edge scoring components: baseCos, basePrior, blend, idPrior, fkBonus, dir bonuses, hub/fanout penalties)
+✅ Normalized scores (scoreNormTop 0..1 for UI consistency)
+✅ Guardrails (pathScoringOverrides clamped with warnings)
+✅ LTR re-ranking support (x-ltr header enables learning-to-rank reordering)
+✅ Path features (x-features header exposes hubSteps, fanoutSteps, bridges, pkToFkSteps, fkToPkSteps, revisits, uniqueEntities)
+✅ Path components (avgCos, avgPrior, rawBlend, lengthPrior, final) in scoreComponentsByPath
+⛔ Graph.json persistence (graph.json builder not implemented - should export entities + edges with FK=1.0, heuristic edges <1.0)
+🟨 Path disambiguation using A⁺/C/S blend (paths scored but not disambiguated using full AlignPlus/CostPlus/Stability blend)
 
 ⸻
 
 8) Multi-GroupBy & Complex Query Shapes
-	•	✅ Single & dual groupBy supported conceptually and in examples.
-	•	🟨 Triple GROUP BY tests (MySQL list, Mongo composite _id) not in suite.
-	•	🟨 Compare periods × extra dims (period×segment×country) tests missing.
-	•	⛔ Window functions (moving avg, YoY) deferred to Phase-4.
-	•	🟨 Nested AND/OR across joins—partial examples only.
-Formula Lab
-	•	⛔ F5 GroupInfo™ (parsimony vs informativeness) scoring not yet computed.
-
-**Completion Notes for 🟨 Items:**
-
-1. **Triple GROUP BY tests**
-   - **Status:** Examples exist conceptually, but no test suite
-   - **Files:** 
-     - `phase3-neurons/examples/aiql/` - Add test cases
-     - Test files (if any) - Add assertions
-   - **Action:** 
-     - Create 3-5 example IQLs with triple GROUP BY
-     - For MySQL: `GROUP BY field1, field2, field3`
-     - For Mongo: `_id: {field1: "$field1", field2: "$field2", field3: "$field3"}`
-     - Add to test suite with assertions
-
-2. **Compare periods × extra dims**
-   - **Status:** Partial support, missing test cases
-   - **Files:** `phase3-neurons/examples/aiql/` - Add examples
-   - **Action:** Create examples like:
-     - Compare revenue by period×segment×country
-     - Compare orders by month×status×shipping_city
-     - Verify compilation to UQL/SQL works correctly
-
-3. **Nested AND/OR across joins**
-   - **Status:** Partial examples exist
-   - **Files:** `phase3-neurons/examples/aiql/` - Enhance examples
-   - **Action:** Add examples with complex WHERE clauses:
-     - `(orders.status = 'shipped' AND orders.total_amount > 100) OR (orders.country = 'US' AND customer.segment = 'premium')`
-     - Test precedence and compilation
-
-4. **F5 GroupInfo™ scoring**
-   - **Status:** NOT IMPLEMENTED
-   - **File:** `phase3-neurons/app/synapse.py` or new `groupinfo.py`
-   - **Action:** Implement function that computes:
-     - Parsimony: penalty for too many grouping dimensions
-     - Informativeness: reward for meaningful groupings
-     - InfoGain: information gain from grouping
-   - **Usage:** Add to path scoring or as separate metric in `/synapse/paths` debug
-
-Actions: add 3× groupBy example set; precedence tests; compute/emit P(p)/InfoGain̂.
+✅ Single & dual groupBy supported conceptually and in examples (segment×country, city over periods)
+✅ Examples validate against schema (ops/validate-examples.js passes)
+🟨 Triple GROUP BY tests (MySQL list, Mongo composite _id) - examples exist conceptually but not in test suite
+🟨 Compare periods × extra dims (period×segment×country) - partial support, missing test cases
+🟨 Nested AND/OR across joins - partial examples only, missing precedence tests
+⛔ Window functions (moving avg, YoY) - deferred to Phase-4
+⛔ F5 GroupInfo™ (parsimony vs informativeness) scoring - not yet computed (should compute InfoGain, parsimony penalty, informativeness reward)
 
 ⸻
 
 9) Integration with Phase-2 Runtime
-	•	✅ E2E demonstrated: neuron targets → UQL/SQL compilation on MySQL & Mongo; x-intent-vec path works.
-	•	🟨 Feature flag USE_NEURONS=1 toggle in runtime not plumbed end-to-end.
-	•	🟨 Traces to include {A,C,P,S,R,τ} everywhere.
-	•	⛔ Fallback: low neuronScore → rule planner.
-
-**Completion Notes for 🟨 Items:**
-
-1. **Feature flag USE_NEURONS=1**
-   - **Status:** Structure exists, not fully integrated
-   - **Files:** Phase-2 runtime code (outside this repo)
-   - **Action:** Wire flag to toggle between neuron planner and rule planner
-   - **Where:** Runtime planner/dispatcher code
-
-2. **Traces with {A,C,P,S,R,τ}**
-   - **Status:** Partial - some values computed, not all propagated
-   - **Files:** 
-     - `phase3-neurons/app/main.py` - `/synapse/fill`, `/synapse/paths` endpoints
-     - Phase-2 runtime trace code
-   - **Action:** Ensure all Formula Lab values are included in trace payloads:
-     - A = AlignPlus (✅ computed)
-     - C = CostPlus (⛔ not computed - see Section 10)
-     - P = PathScore (✅ computed)
-     - S = Stability/AliasStability (✅ computed)
-     - R = Parity/RBAC (⛔ not computed - see Section 10)
-     - τ = Temperature/Boltzmann (⛔ not implemented)
-
-3. **Fallback: low neuronScore → rule planner**
-   - **Status:** NOT IMPLEMENTED
-   - **Files:** Phase-2 runtime planner code
-   - **Action:** Add logic to check `neuronScore` threshold, fall back to rule-based planner if below threshold
-
-Actions: add flag + fallback; propagate Formula Lab values into runtime trace payloads.
+✅ E2E demonstrated (neuron targets → UQL/SQL compilation on MySQL & Mongo)
+✅ x-intent-vec path works (can pass intent vector directly to planner)
+✅ Boltzmann exploration (τ) in beam selection (planner/src/index.ts:464 softmaxPick with tau)
+🟨 Feature flag USE_NEURONS=1 toggle in runtime - structure exists, not fully plumbed end-to-end
+🟨 Traces to include {A,C,P,S,R,τ} everywhere - partial (A/P/S computed, C/R/τ missing or not propagated)
+🟨 A(p)=AlignPlus computed in neurons, not fully surfaced in planner trace (computed but not in trace payload)
+🟨 S(p)=AliasStability computed in /iem/verify, not used in planner (computed but not wired to planner scoring)
+⛔ C(p)=CostPlus (index/complexity hints) - not implemented (see Section 10)
+⛔ P(p)=GroupInfo (parsimony vs informativeness) - not implemented (see Section 8)
+⛔ R(p)=Parity/RBAC - not implemented (see Section 10)
+⛔ Fallback: low neuronScore → rule planner - not implemented (should check threshold, fall back to rule-based planner)
 
 ⸻
 
 10) Parity, Index Safety & Policy
-	•	✅ Parity endpoint working; minor ordering diffs acceptable.
-	•	✅ Index guard (requireIndexedFilters=true) active.
-	•	🟨 Feed index/complexity hints into CostPlus™ scoring.
-	•	⛔ RBAC penalties into R(p).
-Formula Lab
-	•	⛔ F7 ParityTau™ (Kendall τ from sampled parity) → R(p).
-	•	⛔ F8 CostPlus™ (unindexed_range, join_depth, like_contains, non_sargable, est_rows).
-
-**Completion Notes:**
-
-1. **Feed index/complexity hints into CostPlus™**
-   - **Status:** Partial - index guard exists, hints not fed to scoring
-   - **Files:**
-     - Phase-2 adapter code (MySQL/Mongo adapters)
-     - `phase3-neurons/app/synapse.py` - Path scoring
-   - **Action:** 
-     - Adapters should emit hints: `{unindexed_range: bool, join_depth: int, like_contains: bool, non_sargable: bool, est_rows: int}`
-     - Wire hints into path scoring or create CostPlus function
-     - Apply penalties based on hints
-
-2. **F8 CostPlus™**
-   - **Status:** NOT IMPLEMENTED
-   - **File:** `phase3-neurons/app/synapse.py` or new `costplus.py`
-   - **Action:** Implement function that computes cost score based on:
-     - `unindexed_range`: penalty for range queries without index
-     - `join_depth`: penalty for deep joins
-     - `like_contains`: penalty for LIKE '%...%' patterns
-     - `non_sargable`: penalty for non-SARGable predicates
-     - `est_rows`: cost based on estimated row count
-   - **Usage:** Add to path scoring or as separate metric
-
-3. **F7 ParityTau™**
-   - **Status:** NOT IMPLEMENTED
-   - **File:** `phase3-neurons/app/parity.py` or add to existing parity code
-   - **Action:** 
-     - Sample parity results (run same query on MySQL and Mongo)
-     - Compute Kendall's τ (rank correlation) between results
-     - Use τ as penalty/reward in R(p) scoring
-
-4. **RBAC penalties into R(p)**
-   - **Status:** NOT IMPLEMENTED
-   - **Files:** 
-     - RBAC system (if exists)
-     - `phase3-neurons/app/synapse.py` - Path scoring
-   - **Action:** 
-     - Check user permissions for accessed entities/fields
-     - Apply penalties to paths that access restricted data
-     - Include in R(p) scoring
-
-Actions: emit adapter hints; compute τ_K; wire to C(p)/R(p).
+✅ Parity endpoint working (minor ordering diffs acceptable)
+✅ Index guard (requireIndexedFilters=true) active in planner
+🟨 Feed index/complexity hints into CostPlus™ scoring - index guard exists, hints not fed to scoring (adapters should emit hints: unindexed_range, join_depth, like_contains, non_sargable, est_rows)
+⛔ F8 CostPlus™ (unindexed_range, join_depth, like_contains, non_sargable, est_rows) - not implemented (should compute cost score based on adapter hints)
+⛔ F7 ParityTau™ (Kendall τ from sampled parity) → R(p) - not implemented (should sample parity results, compute Kendall's τ, use as penalty/reward)
+⛔ RBAC penalties into R(p) - not implemented (should check user permissions, apply penalties to restricted paths)
 
 ⸻
 
 11) Tests & Tooling
-	•	✅ Phase-2 exerciser extended to call neurons.
-	•	✅ Example IQLs validate against schema.
-	•	⛔ run-phase3-tests.sh to orchestrate neurons endpoints: /iem/build, /iem/verify, /intent/encode(_nl), /synapse/match, /synapse/paths, /synapse/fill, /generate.
-	•	⛔ Assertions for compiled UQL, traces with {A,C,P,S,R,τ}, multi-join & 3× groupBy, parity τ_K present.
-
-**Completion Notes:**
-
-1. **run-phase3-tests.sh**
-   - **Status:** NOT IMPLEMENTED
-   - **File:** Create `phase3-neurons/run-phase3-tests.sh` or `scripts/run-phase3-tests.sh`
-   - **Action:** Create script that:
-     ```bash
-     #!/bin/bash
-     # 1. Build IEM
-     curl -X POST http://localhost:8000/iem/build ...
-     # 2. Verify IEM
-     curl http://localhost:8000/iem/verify ...
-     # 3. Test intent encoding
-     curl -X POST http://localhost:8000/intent/encode ...
-     curl -X POST http://localhost:8000/intent/encode_nl ...
-     # 4. Test synapse endpoints
-     curl -X POST http://localhost:8000/synapse/match ...
-     curl -X POST http://localhost:8000/synapse/paths ...
-     curl -X POST http://localhost:8000/synapse/fill ...
-     # 5. Test generator
-     curl -X POST http://localhost:8000/generate ...
-     # 6. Collect summary metrics
-     ```
-   - **Output:** JSON summary with pass/fail for each endpoint, timing, metrics
-
-2. **Assertions**
-   - **Status:** NOT IMPLEMENTED
-   - **Files:** Add to test script or separate `test_assertions.sh`
-   - **Action:** Add assertions for:
-     - Compiled UQL is valid and executable
-     - Traces contain {A,C,P,S,R,τ} fields (where applicable)
-     - Multi-join paths work (2-hop, 3-hop)
-     - 3× groupBy examples compile correctly
-     - Parity τ_K is computed (when parity endpoint used)
-
-Action: add runner + summary artifacts.
+✅ Phase-2 exerciser extended to call neurons
+✅ Example IQLs validate against schema (ops/validate-examples.js)
+⛔ run-phase3-tests.sh to orchestrate neurons endpoints (/iem/build, /iem/verify, /intent/encode, /intent/encode_nl, /synapse/match, /synapse/paths, /synapse/fill, /generate)
+⛔ Assertions for compiled UQL, traces with {A,C,P,S,R,τ}, multi-join & 3× groupBy, parity τ_K present
 
 ⸻
 
 12) Documentation & Operability
-	•	🟨 Phase-3 Test Report template (like Phase-1/2).
-	•	⛔ README-neurons.md (wiring, flags, headers, traces, override guardrails).
-	•	⛔ Whitepaper appendix: A/C/P/S/R examples & weight sensitivity.
-
-**Completion Notes:**
-
-1. **Phase-3 Test Report template**
-   - **Status:** Partial - checklist exists, formal report template missing
-   - **File:** Create `docs/PHASE3_TEST_REPORT.md` or similar
-   - **Action:** Create template with sections:
-     - Executive Summary
-     - Test Environment
-     - Endpoint Coverage
-     - Formula Lab Results
-     - Performance Metrics
-     - Known Issues
-     - Recommendations
-
-2. **README-neurons.md**
-   - **Status:** NOT IMPLEMENTED
-   - **File:** Create `phase3-neurons/README-neurons.md`
-   - **Action:** Document:
-     - How to wire neurons into Phase-2 runtime
-     - Environment variables/flags (USE_NEURONS, TRAINER_TENANT_CANARY, etc.)
-     - Request headers (x-api-key, x-tenant-id, x-experiment, etc.)
-     - Trace payload structure
-     - Override guardrails (pathScoringOverrides, fillOverrides)
-     - Configuration hierarchy (global → tenant → active checkpoint)
-     - Debug endpoints (/debug/runtime, /debug/graph)
-
-3. **Whitepaper appendix**
-   - **Status:** NOT IMPLEMENTED
-   - **File:** Create `docs/WHITEPAPER_APPENDIX.md` or add to existing whitepaper
-   - **Action:** Document:
-     - A/C/P/S/R formula definitions with examples
-     - Weight sensitivity analysis
-     - Tuning guidelines
-     - Example calculations
-
-Action: draft report + README + appendix.
+✅ Phase-3 test report (COMPREHENSIVE_TEST_RESULTS.txt exists)
+✅ Basic README.md (phase3-neurons/README.md with quick start, API endpoints, config)
+🟨 README with wiring guide - basic README exists but missing detailed wiring guide (how to wire neurons into Phase-2 runtime, env vars, headers, trace payload structure, override guardrails, config hierarchy)
+⛔ Whitepaper appendix (A/C/P/S/R examples & weight sensitivity) - not implemented (should document formula definitions, weight sensitivity analysis, tuning guidelines, example calculations)
 
 ⸻
 
-Immediate Next Actions (surgical, in order)
-	1.	Graph & Paths: ✅ Multi-hop paths done. Missing: graph.json export, A⁺/C/S disambiguation.
-	   **Files:** `phase3-neurons/app/main.py` - Add `/graph/export` endpoint
-	   **Action:** Export graph.json with entities and edges for visualization
-	2.	Planner scoring & trace: ⛔ Implement neuronScore() with F3/F5/F8; log {A,C,P,S,R,final,τ}.
-	   **Files:** Phase-2 runtime planner code
-	   **Action:** Create neuronScore() function that combines A/C/P/S/R, add τ (temperature) for Boltzmann exploration
-	3.	Intent NL: ✅ COMPLETE - /intent/encode_nl + SynoMix™ fully implemented.
-	4.	Complex queries: 🟨 Add 3× groupBy examples (MySQL & Mongo) and tests.
-	   **Files:** `phase3-neurons/examples/aiql/` - Add example files
-	   **Action:** Create 3-5 example IQLs with triple GROUP BY, verify compilation
-	5.	Costs/Parity: ⛔ Adapter cost hints → F8; parity sample → F7 τ_K; wire into trace.
-	   **Files:** Phase-2 adapters, `phase3-neurons/app/synapse.py`
-	   **Action:** Implement F8 CostPlus™ and F7 ParityTau™, wire into scoring
-	6.	Phase-3 runner: ⛔ One-shot script to hit all neuron endpoints + collect metrics and parity τ_K.
-	   **File:** Create `phase3-neurons/run-phase3-tests.sh`
-	   **Action:** Script that calls all endpoints, collects metrics, generates summary report
+13) Additional Endpoints & Features
+✅ GET /config/effective endpoint (runtime config viewer, shows active shaping/fewshot paths, synapseConfig with source)
+✅ GET /config/knobs endpoint (lightweight view of runtime-tunable knobs: pathScoring, alignPlus)
+✅ POST /config/knobs endpoint (update knobs at runtime with safe clamps, returns changed/now)
+✅ GET /debug/runtime endpoint (active checkpoint + synapse config, environment flags, activeCheckpoint ptr data)
+✅ GET /debug/graph endpoint (schema graph stats: degrees, top hubs, fanout summary with threshold)
+✅ GET /principles/show endpoint (shows merged principles.json from active checkpoint)
+✅ Active config merging (load_active_config_merged at startup, set_runtime_config)
+✅ Baseline config reset per request (_apply_baseline_cfg in middleware before each request)
+✅ Glossary support (for salience computation, loaded via load_glossary)
+✅ Time config support (tenant-level time grammar, loaded via load_time_cfg)
+✅ Decision logging (structured decision.jsonl with event tracking via log_decision)
+✅ Config hot-reload support (CFG_HOT env clears caches on each request)
+✅ Rate limiting with headers (x-ratelimit-limit, x-ratelimit-remaining, x-ratelimit-reset)
+✅ Path scoring override clamps (idPrior, fkBonus, cosineWeight, etc. clamped to safe ranges)
+✅ Body size limits (NEURONS_MAX_BODY env, default 2MB)
+✅ Trust proxy support (NEURONS_TRUST_PROXY env for x-forwarded-for)
+✅ Output base path restrictions (NEURONS_OUT_BASE env for file write safety)
+✅ Experiment headers: x-experiment (baseline-only, train-shadow modes supported)
+✅ Tenant canary support (TRAINER_TENANT_CANARY env var, tenant allowlist)
+✅ Shadow mode (TRAINER_SHADOW_ONLY env, x-experiment: train-shadow header)
 
 ⸻
 
-"Neuron-3 hardening (optional now, safe later)"
-	•	✅ Per-edge breakdown in /synapse/paths debug - COMPLETE
-	•	✅ Normalized scoreNorm 0–1 - COMPLETE
-	•	✅ Override guardrails with debug.warn when clamped - COMPLETE
-
-**Status:** ✅ ALL COMPLETE - All three hardening items implemented and working.
-
-**Evidence:**
-- Edge breakdowns: `debug.edgeScoresByPath` shows per-edge scoring components
-- Score normalization: `debug.scoreNormTop` provides 0-1 normalized scores
-- Guardrails: `debug.warn` shows clamped override values
-
-⸻
-
-Phase-4 (heads-up)
-	•	Train a lightweight Conflict-Resolver MLP over (metricVec, candidateVec, pathFeatures) to learn the blend (vs fixed 0.5/0.35/0.15), plus few-shot bootstrapping.
+14) Neuron-6: Curiosity & Insight Engine
+⛔ Autonomous question generation & insight discovery - not started
+⛔ Schema-driven generators (discovers joins and measure/dimension pairs) - not started
+⛔ Anomaly generators (detects data drift, outliers, sudden metric variance) - not started
+⛔ Pattern generators (derives trends, deltas, ratios, seasonality, correlations) - not started
+⛔ Coverage explorer (identifies under-queried schemas) - not started
+⛔ Goal-oriented seeds (predefined probes: leakage, delay, inefficiency, fraud) - not started
+⛔ Utility scoring U(p) = f(A,C,P,S,R,Novelty,InfoGain) - not started
+⛔ Novelty computation (vector distance from past 7-day insights) - not started
+⛔ InfoGain computation (entropy / KL divergence over distributions) - not started
+⛔ /curiosity/feed endpoint (auto insights ranked by Utility) - not started
+⛔ /curiosity/feedback API (thumbs up/down or irrelevant) - not started
+⛔ Learning loop (feedback → trainer) - not started
+⛔ Safety guardrails (cost, PII, parity) - not started
 
 ⸻
 
-Quick Evidence Index (what you already ran)
-	•	IEM: POST /iem/build → ok:true, fieldCount:32.
-	•	Fill/Conflicts: POST /synapse/fill (with/without role prefs & conflictOverrides) → resolutions + scored candidates.
-	•	Paths: POST /synapse/paths (+ pathScoringOverrides) → scores change per override.
-	•	Explain: POST /synapse/explain → per-slot top list with components.
-	•	Generator: POST /generate → files in examples/aiql, coverage file; node ops/validate-examples.js → [OK].
-	•	Coverage API: GET /examples/coverage (401 without key; 200 with key).
-	•	Make/NPM: make regen-aiql, npm run regen:aiql end-to-end green.
-	•	✅ Learning APIs: POST /feedback/record, GET /golden/list, POST /golden/add, POST /trainer/run, GET /trainer/last_eval all working.
-
-If you want, I can turn this into a living CHECKLIST_PHASE3.md with emoji statuses and a tiny "How to verify" aside under each item for your team.
+Quick "What Matters Next" (Priorities)
+1. Wire few-shot into runtime (encode_nl + match) — unlocks tenant-level adaptation (🟨→✅)
+2. Planner scoring/trace with A/C/P/S/R — even stubbed C/P/R gives visibility now (🟨→✅)
+3. Rollback + shadow — safety to experiment (⛔→✅)
+4. Graph persistence + path disambiguation using A⁺/C/S — reduces brittle joins (🟨→✅)
+5. Phase-3 runner & canary switches — reproducible eval + safe rollout (⛔/🟨→✅)

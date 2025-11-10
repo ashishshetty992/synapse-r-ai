@@ -24,7 +24,7 @@ Action: add robust validators (bad payloads, missing files), request-id logs, JS
 	•	✅ Field embeddings (char-ngrams) + role priors (id/timestamp/money/geo/category/text/qty).
 	•	✅ Alias generation (underscored ↔ spaced).
 	•	✅ Deterministic iem.json (configurable dim).
-	•	✅ Quality checks (ids cluster; amounts cluster) computed & surfaced — implicit only, not reported.
+	•	✅ Quality checks (ids cluster; amounts cluster) computed & surfaced via /iem/verify.
 	•	✅ IEM versioning & drift detection (compare IEM_t vs IEM_t-1).
 	•	✅ Entity-level embeddings.
 
@@ -32,44 +32,47 @@ Formula Lab
 	•	✅ F1 RoleBoost™ (role-aware vector: v′ = normalize(v + λᵣ·R·r)) → emit roleBoost per field.
 	•	✅ F2 AliasStability™ (drift guard; feeds S(p)).
 
-Action: add /iem/verify to report clustering scores, roleBoost stats, and drift alerts.
+Action: ✅ COMPLETE - /iem/verify endpoint implemented (main.py:699) reporting clustering scores, roleBoost stats, and drift alerts.
 
 ⸻
 
 3) Neuron-2: Intent Encoder
 	•	✅ Encoder v0.2 (IQL → vector via char-ngrams bag).
 	•	✅ /intent/encode returns {vec, vocab}.
-	•	✅ /intent/encode_nl (NL text → vector) with synonyms injection.
-	•	✅ synonyms.json (e.g., “revenue→total_amount”, “city→shipping_city”).
+	•	✅ /intent/encode_nl (NL text → vector) with synonyms injection (main.py:609).
+	•	✅ synonyms.json (e.g., "revenue→total_amount", "city→shipping_city").
 
 Formula Lab
-	•	✅ F6 SynoMix™ (BM25 alias score ⊕ cosine; boosts A(p) for NLQ).
+	•	✅ F6 SynoMix™ (BM25 alias score ⊕ cosine; boosts A(p) for NLQ) - implemented in intent.py:309.
 
-Action: ship /intent/encode_nl + synonyms.json; log top alias hits.
+Action: ✅ COMPLETE - /intent/encode_nl + synonyms.json shipped; top alias hits logged in debug.topAliasHits.
 
 ⸻
 
 4) Neuron-3: Synapse Matching
 	•	✅ Cosine ranking over IEM fields/entities.
 	•	✅ Tunables: topKFields, topKEntities, roleAlpha.
-	•	✅ Slot-filling rules exist conceptually; not exposed as API.
-	•	✅ Conflict resolver (multi “city” across entities).
+	•	✅ Slot-filling rules exposed via /synapse/fill API (main.py:867).
+	•	✅ Conflict resolver (multi "city" across entities) - implemented in synapse.py.
+	•	🟨 Conflict transparency: selectedBy, decisionScore, bestNumericScore at top level ✅; finalScore and reason only per-candidate in scores[] (not top-level) - partial (synapse.py:906-928, models.py:218-226).
+	•	✅ Timestamp behavior: sameEntityTimestampPrior + locality decay (0.4× prior for 1-hop) + preferSameEntityTimestampDelta override live (synapse.py:777-790, 878-895, 1154-1190).
 	•	✅ Join inference beyond single-hop (see §7).
 
 Formula Lab
-	•	✅ F3 AlignPlus™ (coverage-aware A(p)): log {A_base, Coverage, OffSchemaRate, A⁺}.
-	•	✅ F4 PathScore™ (scores multi-join paths).
+	•	✅ F3 AlignPlus™ (coverage-aware A(p)): log {A_base, Coverage, OffSchemaRate, A⁺} - computed in synapse.py:527.
+	•	✅ F4 PathScore™ (scores multi-join paths) - implemented in synapse.py:_path_score.
 
-Action: add /synapse/fill (slot fill + join hints) and /synapse/paths (path candidates + scores).
+Action: ✅ COMPLETE - /synapse/fill (main.py:867) and /synapse/paths (main.py:1056) endpoints implemented with edge breakdowns, normalized scores, and guardrails.
 
 ⸻
 
 5) Neuron-4: Auto-Question Generator (PoC)
 	•	✅  Prototype spec (top_k / trend / compare) only.
-	•	✅  /generate → 5 IQLs per schema.
+	•	✅  /generate → 5 IQLs per schema (main.py:1347).
 	•	✅  Validate with ops/validate-examples.js, write examples/aiql/.
+	•	✅  Coverage endpoint /examples/coverage (main.py:1341).
 
-Action: implement /generate, write files, run validator, capture coverage.
+Action: ✅ COMPLETE - /generate implemented, writes files, validator passes, coverage captured.
 
 ⸻
 Neuron-5: Plan & Checklist
@@ -85,47 +88,48 @@ Neuron-5: Plan & Checklist
 
 🧩 Components to Build
 	•	Feedback Store (append-only):
-	•	File: phase3-neurons/data/feedback.jsonl (one JSON per line)
-	•	Schema: {ts, tenant, intent, chosenTarget, otherSlots, iemHash, userAgent, latencyMs}
-	•	API: POST /feedback/record
+	•	✅ File: phase3-neurons/data/feedback.jsonl (one JSON per line)
+	•	✅ Schema: {ts, tenant, intent, chosenTarget, otherSlots, iemHash, userAgent, latencyMs}
+	•	✅ API: POST /feedback/record (feedback.py:14)
 	•	Golden Set (curated eval):
-	•	Dir: phase3-neurons/golden/ (e.g., orders-top-city.json)
-	•	Schema: {intent, expected: {target, slots{}}, notes}
-	•	API: GET /golden/list, POST /golden/add
+	•	✅ Dir: phase3-neurons/golden/ (e.g., orders-top-city.json)
+	•	✅ Schema: {intent, expected: {target, slots{}}, notes}
+	•	✅ API: GET /golden/list, POST /golden/add (golden.py:20,34)
 	•	Trainer (few-shot + weights search):
-	•	Module: app/trainer.py
-	•	Inputs: feedback.jsonl, golden/
-	•	Outputs:
-	•	app/checkpoints/trainer_{yyyymmddHHMM}/shaping.json
-	•	app/checkpoints/.../fewshot.json
-	•	Strategy:
-	•	rank-loss on chosenTarget vs candidates
-	•	small-grid search over {alias_alpha, shape_alpha, shape_beta, metric_alpha, role_alpha_default}
-	•	per-tenant deltas on top of global defaults
+	•	✅ Module: app/trainer.py
+	•	✅ Inputs: feedback.jsonl, golden/
+	•	✅ Outputs:
+	•	✅ app/checkpoints/trainer_{yyyymmddHHMM}/shaping.json
+	•	✅ app/checkpoints/.../fewshot.json
+	•	✅ Strategy:
+	•	✅ rank-loss on chosenTarget vs candidates
+	•	✅ small-grid search over {alias_alpha, shape_alpha, shape_beta, metric_alpha, role_alpha_default}
+	•	✅ per-tenant deltas on top of global defaults
 	•	Few-Shot Runtime Booster:
-	•	File: app/fewshot.py
-	•	Loads fewshot.json and nudges role/alias priors at /intent/encode_nl & /synapse/match.
-	•	Merge order: global → tenant → request.overrides
+	•	✅ File: app/fewshot.py
+	•	🟨 Loads fewshot.json and nudges role/alias priors at /intent/encode_nl & /synapse/match (loaded but not actively applied in matching).
+	•	✅ Merge order: global → tenant → request.overrides
 	•	Evaluator:
-	•	Module: app/eval.py
-	•	Metrics: Top-1 acc, MRR, Role hit@1, Slot F1, Aplus mean, PathScore mean
-	•	API: GET /trainer/last_eval
+	•	✅ Module: app/eval.py
+	•	✅ Metrics: Top-1 acc, MRR, Role hit@1, Slot F1, Aplus mean, PathScore mean
+	•	✅ API: GET /trainer/last_eval (trainer.py:241) - writes canonical last_eval.json, returns {ok, checkpoint, ...}
 	•	Versioning + Rollback:
-	•	API: GET /trainer/versions, POST /trainer/activate?ckpt=…, POST /trainer/rollback
-	•	Active pointers saved in phase3-neurons/runtime/active.json
+	•	✅ API: GET /trainer/versions (trainer.py:217), POST /trainer/activate (trainer.py:198)
+	•	⛔ POST /trainer/rollback - not implemented
+	•	✅ Active pointers saved in phase3-neurons/runtime/active.json
 
 ⸻
 
 🔌 Public APIs (new)
-	•	POST /feedback/record
+	•	✅ POST /feedback/record (feedback.py:14)
 Body: {intent, chosenTarget, slots?, tenant?} → {ok, id}
-	•	POST /trainer/run
+	•	✅ POST /trainer/run (trainer.py:102)
 Body: {tenant?, maxGrid=64, maxFewshot=2000} → {ok, ckpt, metrics}
-	•	POST /trainer/activate
+	•	✅ POST /trainer/activate (trainer.py:198)
 Body: {checkpoint} → {ok, active}
-	•	GET /trainer/versions → list of checkpoints + metrics
-	•	GET /trainer/last_eval → metrics for active ckpt
-	•	GET /fewshot/show?tenant=… → preview applied few-shot patterns
+	•	✅ GET /trainer/versions (trainer.py:217) → list of checkpoints + metrics
+	•	✅ GET /trainer/last_eval (trainer.py:241) → metrics for active ckpt, writes canonical last_eval.json, returns {ok, checkpoint, ...}
+	•	✅ GET /fewshot/show?tenant=… (fewshot.py:9) → preview applied few-shot patterns
 
 ⸻
 
@@ -154,12 +158,12 @@ Body: {checkpoint} → {ok, active}
 		{"checkpoint":"trainer_2025-10-28_1405","shaping":"…/shaping.json","fewshot":"…/fewshot.json"}
 
 🛠️ CLI / Make / NPM
-	•	make feedback-demo → seeds 20 feedback rows
-	•	make trainer-run → runs trainer, prints ckpt + metrics
-	•	make trainer-activate CKPT=…
-	•	npm run train → POST /trainer/run (global)
-	•	npm run train:tenant -- acme
-	•	npm run trainer:activate -- trainer_YYYYMMDDHHMM
+	•	⛔ make feedback-demo → seeds 20 feedback rows - not implemented
+	•	⛔ make trainer-run → runs trainer, prints ckpt + metrics - not implemented
+	•	⛔ make trainer-activate CKPT=… - not implemented
+	•	⛔ npm run train → POST /trainer/run (global) - not implemented
+	•	⛔ npm run train:tenant -- acme - not implemented
+	•	⛔ npm run trainer:activate -- trainer_YYYYMMDDHHMM - not implemented
 
 ⸻
 
@@ -177,18 +181,18 @@ Body: {checkpoint} → {ok, active}
 ⸻
 
 🔍 Observability
-	•	Structured logs: trainer.run.start/end, trainer.ckpt.activate, fewshot.load
-	•	GET /metrics Prom-style gauges:
-	•	synapse_trainer_top1_acc{tenant=…}
-	•	synapse_trainer_runs_total
-	•	synapse_feedback_rows_total
+	•	✅ Structured logs: trainer.run.start/end, trainer.ckpt.activate, fewshot.load (via log_json in main.py)
+	•	✅ GET /metrics Prom-style gauges (main.py:53-59):
+	•	✅ synapse_trainer_top1_acc{tenant=…}
+	•	✅ synapse_trainer_runs_total
+	•	✅ synapse_feedback_rows_total
 
 ⸻
 
 🧯 Guardrails
-	•	Bound weights search ranges (e.g., alias_alpha ∈ [0.25, 0.6])
-	•	PII filter for feedback payloads (no raw user text stored if marked sensitive)
-	•	Tenant isolation: disk paths under checkpoints/{tenant|_global_}/…
+	•	✅ Bound weights search ranges (e.g., alias_alpha ∈ [0.25, 0.6]) - implemented in trainer.py with clamp()
+	•	✅ PII filter for feedback payloads (no raw user text stored if marked sensitive) - feedback.py:20-22
+	•	✅ Tenant isolation: disk paths under checkpoints/{tenant|_global_}/… - implemented in trainer.py:_tenant_dir()
 
 ⸻
 
@@ -214,35 +218,35 @@ Body: {checkpoint} → {ok, active}
 
 6) Planner Integration (A/C/P/S/R with Beam)
 	•	✅ Formula defined; default weights documented.
-	•	🟨 Trace shows planner params & slot candidates; missing A/C/P/S/R numbers.
-	•	🟨 A(p) partially via cosine (not AlignPlus components).
-	•	🟨 C(p) hinted by adapter errors (unindexed ranges) but not scored.
-	•	🟨 P(p) simple penalty concept; not consistently applied.
-	•	⛔ S(p) (alias brittleness) not computed.
+	•	🟨 Trace shows planner params & slot candidates; missing A/C/P/S/R numbers in planner trace.
+	•	🟨 A(p) computed via AlignPlus in synapse.py but not fully wired into planner trace.
+	•	🟨 C(p) hinted by adapter errors (unindexed ranges) but not scored via CostPlus formula.
+	•	🟨 P(p) simple penalty concept in planner; not consistently applied.
+	•	🟨 S(p) (alias brittleness) computed in /iem/verify but not wired into planner.
 	•	⛔ R(p) (parity/RBAC) not computed.
-	•	⛔ Boltzmann exploration (τ) in beam selection.
+	•	✅ Boltzmann exploration (τ) in beam selection (planner/src/index.ts:464 softmaxPick with tau).
 
 Formula Lab
-	•	⛔ F3 AlignPlus™ → A(p)
-	•	⛔ F8 CostPlus™ → C(p)
-	•	⛔ F5 GroupInfo™ → P(p)
-	•	⛔ F2 AliasStability™ → S(p)
-	•	⛔ F7 ParityTau™ → R(p)
+	•	✅ F3 AlignPlus™ → A(p) - implemented in synapse.py:527, used in /synapse/fill
+	•	⛔ F8 CostPlus™ → C(p) - formula not implemented in planner
+	•	⛔ F5 GroupInfo™ → P(p) - formula not implemented in planner
+	•	✅ F2 AliasStability™ → S(p) - computed in iem.py:237, available via /iem/verify but not wired to planner
+	•	⛔ F7 ParityTau™ → R(p) - not implemented
 
-Action: implement neuronScore(plan) and log {A,C,P,S,R,weights,final,τ}; wire adapter cost hints.
+Action: wire AlignPlus/AliasStability into planner trace; implement CostPlus/GroupInfo/ParityTau formulas; log {A,C,P,S,R,weights,final,τ} in planner trace.
 
 ⸻
 
 7) Schema Graph & Multi-Join Reasoning
-	•	🟨 Single-hop join working (sales_order ↔ customer) — proven.
-	•	⛔ Build graph.json (entities + edges: FK=1.0, heuristics<1.0).
-	•	⛔ find_paths(source,target,max_depth=3) + PathScore ranking.
-	•	⛔ Join path disambiguation using A⁺/C/S.
+	•	✅ Single-hop join working (sales_order ↔ customer) — proven.
+	•	🟨 Build graph.json (entities + edges: FK=1.0, heuristics<1.0) - graph built in-memory via _build_join_graph() but not persisted to graph.json file.
+	•	✅ find_paths(source,target,max_depth=3) + PathScore ranking - implemented in synapse.py:_bfs_paths() and _path_score().
+	•	🟨 Join path disambiguation using A⁺/C/S - paths scored but not disambiguated using full A⁺/C/S blend.
 
 Formula Lab
-	•	⛔ F4 PathScore™ (semantics + index + fanout + hop cost).
+	•	✅ F4 PathScore™ (semantics + index + fanout + hop cost) - implemented in synapse.py:_path_score() with edge breakdowns.
 
-Action: ship graph builder, path finder, /synapse/paths; add 2-hop cases (orders→order_item→product).
+Action: ✅ /synapse/paths endpoint shipped (main.py:1056) with edge breakdowns, normalized scores, guardrails. Add graph.json persistence; wire A⁺/C/S for path disambiguation.
 
 ⸻
 
@@ -296,11 +300,11 @@ Action: add phase-3 runner + summary.
 ⸻
 
 12) Documentation & Operability
-	•	🟨 Phase-3 Test Report template (like Phase-1/2).
-	•	⛔ README-neurons.md (how to wire neurons; flags, headers, traces).
+	•	🟨 Phase-3 Test Report template (like Phase-1/2) - COMPREHENSIVE_TEST_RESULTS.txt exists.
+	•	🟨 README-neurons.md - basic README.md exists (phase3-neurons/README.md) but missing detailed wiring guide.
 	•	⛔ Whitepaper appendix: A/C/P/S/R examples & weight sensitivity.
 
-Action: draft report + README + appendix.
+Action: enhance README with wiring guide; draft whitepaper appendix.
 
 ⸻
 
@@ -331,9 +335,174 @@ If you like, I’ll patch those in next. Otherwise we can move on to the next ne
 
 💡 Future: Let Nauvra Learn This
 
-In Phase-4 (Neuro-Symbolic Learning) we’ll train a lightweight Conflict Resolver MLP that:
+In Phase-4 (Neuro-Symbolic Learning) we'll train a lightweight Conflict Resolver MLP that:
 	•	takes (metricVec, candidateVec, pathFeatures)
 	•	learns to predict the most probable relationally consistent slot,
 	•	and fine-tunes the weight blend (0.5/0.3/0.2 → learned dynamically).
 
-That’s when the resolver becomes self-tuning rather than heuristic.
+That's when the resolver becomes self-tuning rather than heuristic.
+
+⸻
+
+📋 REVIEW SUMMARY (Codebase Review 2025-01-XX)
+
+✅ NEWLY DISCOVERED IMPLEMENTATIONS:
+	•	/iem/verify endpoint fully implemented (main.py:699) - reports clustering, roleBoost, drift
+	•	/synapse/paths endpoint with edge breakdowns, normalized scores, guardrails (main.py:1056)
+	•	/synapse/fill endpoint fully implemented (main.py:867) with AlignPlus computation
+	•	Neuron-5 APIs mostly complete: feedback, golden, trainer, eval, fewshot endpoints exist
+	•	Boltzmann exploration (τ) already implemented in planner beam selection
+	•	Prometheus metrics infrastructure in place (main.py:53-59)
+	•	PII filtering and tenant isolation implemented
+
+🟨 PARTIAL IMPLEMENTATIONS:
+	•	Few-shot hints loaded but not actively applied in matching runtime
+	•	AlignPlus computed but not fully wired into planner trace
+	•	AliasStability computed but not wired into planner S(p)
+	•	Graph built in-memory but not persisted to graph.json
+	•	Path disambiguation doesn't use full A⁺/C/S blend
+
+⛔ MISSING ITEMS:
+	•	POST /trainer/rollback endpoint
+	•	CLI/Make/NPM commands for trainer operations
+	•	run-phase3-tests.sh test runner
+	•	CostPlus (F8) formula in planner
+	•	GroupInfo (F5) formula in planner
+	•	ParityTau (F7) formula for R(p)
+	•	RBAC penalties into R(p)
+	•	Feature flag USE_NEURONS=1 end-to-end wiring
+	•	Fallback policy (low neuronScore → rule planner)
+	•	graph.json persistence
+	•	Enhanced README with wiring guide
+	•	Whitepaper appendix
+
+🔍 FILES TO MODIFY FOR COMPLETION:
+	•	packages/planner/src/index.ts - wire A/C/P/S/R into trace
+	•	packages/planner/src/scorer.ts - implement CostPlus, GroupInfo formulas
+	•	phase3-neurons/app/synapse.py - wire few-shot hints into match_candidates
+	•	phase3-neurons/app/intent.py - wire few-shot hints into encode_intent_nl
+	•	phase3-neurons/app/trainer.py - add rollback endpoint
+	•	phase3-neurons/app/synapse.py - add graph.json persistence
+	•	Makefile / package.json - add CLI commands
+	•	ops/run-phase3-tests.sh - create test runner
+	•	phase3-neurons/README.md - enhance with wiring guide
+
+=================================================
+=================================================
+Neuron-6: Curiosity & Insight Engine — Status Checklist
+
+0) Core Intent (North Star)
+	•	Goal defined: Nauvra autonomously asks and answers “what’s changing, breaking, or leaking” without human prompt.
+	•	Success metrics:
+	•	Discovery precision (how often an auto insight is correct & relevant).
+	•	Business impact rate (how often it reveals actionable issues before humans do).
+	•	Diversity (breadth of topics/entities touched weekly).
+	•	Compute cost vs value ratio (auto insights per $ of query budget).
+
+⸻
+
+1) Data & Context Awareness
+	•	Access to IEM (schema roles & embeddings) — required.
+	•	Access to Graph.json (joins & relationships).
+	•	Access to Planner A/C/P/S/R scores (align, cost, group info, stability, parity).
+	•	Ability to read golden metrics (e.g., revenue, SLA, returns ratio, utilization).
+	•	Knows tenant-level thresholds (SLA, margin %, target times, etc).
+	•	Knows feedback signals from Neuron-5 (what humans found useful or irrelevant).
+
+⸻
+
+2) Question Generation Layer
+	•	Implements Schema-driven generators — discovers joins and measure/dimension pairs (Orders × Returns, Payment × Courier).
+	•	Implements Anomaly generators — detects data drift, outliers, or sudden metric variance.
+	•	Implements Pattern generators — derives trends, deltas, ratios, seasonality, correlations.
+	•	Implements Coverage explorer — identifies under-queried schemas (cold zones).
+	•	Supports Goal-oriented seeds (predefined probes like “leakage,” “delay,” “inefficiency,” “fraud”).
+	•	Stores candidate question templates in curiosity/pools/.
+
+⸻
+
+3) Candidate Builder
+	•	Converts each question idea → valid IQL (Intent Query Language).
+	•	Resolves metric, groupBy, and filters using IEM + Synapse Match.
+	•	Verifies join validity using PathScore and CostPlus.
+	•	Ensures all candidates pass safety: PII safe, indexed, RBAC-compliant.
+	•	Each candidate stored in curiosity/candidates.jsonl with {intent, IQL, score, reason}.
+
+⸻
+
+4) Utility Scoring (Self-Evaluation)
+	•	Implements Utility function U(p) = f(A,C,P,S,R,Novelty,InfoGain).
+	•	Computes Novelty via vector distance from past 7-day insights.
+	•	Computes InfoGain via entropy / KL divergence over distributions.
+	•	Blends planner signals A/C/P/S/R with curiosity-specific weights.
+	•	Logs score breakdown per candidate in debug trace.
+	•	Rank & filter top-N for execution under cost/time budget.
+
+⸻
+
+5) Execution & Result Evaluation
+	•	Executes top-N candidates (sample mode first, full mode on promising).
+	•	Captures runtime metrics (latency, rows, cost).
+	•	Computes Result Surprisingness Score (z-score, % delta vs baseline).
+	•	Tags candidates with insight type: anomaly / correlation / trend / leakage / SLA breach.
+	•	Writes outputs to curiosity/results/{date}/ as {IQL, insight_summary, metrics, explain}.
+	•	Updates feedback store with auto-generated results.
+
+⸻
+
+6) Surfacing & Human Feedback Loop
+	•	/curiosity/feed endpoint showing auto insights ranked by Utility.
+	•	Each insight has: question, brief insight text, supporting chart, explanation (join, score breakdown).
+	•	/curiosity/feedback API — thumbs up/down or “irrelevant.”
+	•	Feedback auto-feeds back to Neuron-5 trainer (few-shot delta).
+	•	Insights tagged by domain (Finance / SLA / Operations / Customer / Courier).
+
+⸻
+
+7) Safety & Guardrails
+	•	Enforces query cost ceiling (C(p) < limit).
+	•	Suppresses or masks PII automatically.
+	•	Enforces parity check (R(p) within allowed bias threshold).
+	•	Throttles exploration via bandit scheduler (limits per hour/day).
+	•	Auditable logs: every auto insight has reproducible IQL + graph snapshot hash.
+	•	Canary mode: run for selected tenants first.
+
+⸻
+
+8) Learning Loop
+	•	Accepted insights → feedback store (positive).
+	•	Ignored/irrelevant insights → negative samples.
+	•	Trainer re-weights novelty and InfoGain coefficients weekly.
+	•	Periodic retrain of curiosity weights (without redeploy).
+	•	Drift detector alerts when Utility distribution shifts (too repetitive or stale).
+
+⸻
+
+9) Observability & Evaluation
+	•	Metrics exposed via /metrics:
+	•	curiosity_insights_generated_total
+	•	curiosity_useful_rate
+	•	curiosity_avg_cost_ms
+	•	curiosity_diversity_score
+	•	curiosity_learning_velocity
+	•	/curiosity/stats dashboard for ops visibility.
+	•	Phase-3 style test harness for evaluation.
+
+⸻
+
+10) Stretch Goals
+	•	Hypothesis chaining — builds multi-step insights (“because A→B→C”).
+	•	Counterfactual generator — suggests “What if COD disabled?” or “What if zone rerouted?”
+	•	Causal hinting — simple regression or difference-in-difference to test correlation strength.
+	•	Self-benchmarking — compares its insights vs human queries for overlap/novelty.
+
+⸻
+
+Exit Criteria (Neuron-6 complete when…)
+
+✅ It can autonomously propose & execute new IQLs daily
+✅ ≥60% of surfaced insights are novel (not duplicates of prior week)
+✅ ≥30% of insights rated “useful” by humans
+✅ No safety/policy violations (R(p), cost guard)
+✅ Insights reproducible (same IEM snapshot → same result)
+✅ Trainer receives feedback from curiosity loop automatically
